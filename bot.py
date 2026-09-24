@@ -57,7 +57,7 @@ def get_price(symbol):
     price_rial = float(asks[0][0])
 
     # ریال → تومان
-    return round(price_rial / 10)
+    return round(price_rial)
 
 
 def send_message(chat_id, text):
