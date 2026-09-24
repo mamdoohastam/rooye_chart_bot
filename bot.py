@@ -43,7 +43,6 @@ def get_price(symbol):
     if not market:
         return None
 
-    # نوبیتکس قیمت را به ریال می‌دهد؛ تبدیل به تومان
     price_rial = float(market["latest"])
     price_toman = price_rial / 10
 
@@ -82,6 +81,7 @@ def webhook():
         return "OK"
 
     message = data["message"]
+
     chat_id = message["chat"]["id"]
 
     text = message.get("text", "").strip().lower()
@@ -108,6 +108,7 @@ def webhook():
             "برای مشاهده همه قیمت‌ها:\n"
             "/prices"
         )
+
         return "OK"
 
     if text == "/prices":
@@ -128,6 +129,7 @@ def webhook():
                 )
 
         send_message(chat_id, "\n".join(lines))
+
         return "OK"
 
     if text.startswith("/"):
@@ -138,6 +140,7 @@ def webhook():
 
             if result:
                 price, change = result
+
                 name = COINS[symbol]
 
                 emoji = "🟢" if change >= 0 else "🔴"
@@ -147,10 +150,12 @@ def webhook():
                     f"قیمت: {format_number(price)} تومان\n"
                     f"{emoji} تغییر ۲۴ ساعته: {change:+.2f}%"
                 )
+
             else:
                 reply = "❌ قیمت این ارز در حال حاضر در دسترس نیست."
 
             send_message(chat_id, reply)
+
         else:
             send_message(
                 chat_id,
@@ -163,4 +168,8 @@ def webhook():
 
 if name == "main":
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
