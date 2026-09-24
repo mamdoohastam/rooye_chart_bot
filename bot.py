@@ -6,41 +6,72 @@ app = Flask(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-COINS = {
-    "تتر": "USDTIRT",
-    "usdt": "USDTIRT",
-    "بیت کوین": "BTCIRT",
-    "بیتکوین": "BTCIRT",
-    "btc": "BTCIRT",
-    "اتریوم": "ETHIRT",
-    "eth": "ETHIRT",
-    "سولانا": "SOLIRT",
-    "sol": "SOLIRT",
-    "ترون": "TRXIRT",
-    "trx": "TRXIRT",
-    "دوج": "DOGEIRT",
-    "دوج کوین": "DOGEIRT",
-    "doge": "DOGEIRT",
-    "ریپل": "XRPIRT",
-    "xrp": "XRPIRT",
-    "بی ان بی": "BNBIRT",
-    "bnb": "BNBIRT",
-    "تون": "TONIRT",
-    "ton": "TONIRT",
-    "کاردانو": "ADAIRT",
-    "ada": "ADAIRT",
-    "شیبا": "SHIBIRT",
-    "شیبا اینو": "SHIBIRT",
-    "shib": "SHIBIRT",
+# نام‌های فارسی رایج
+ALIASES = {
+    "تتر": "USDT",
+    "دلار": "USDT",
+    "بیت کوین": "BTC",
+    "بیتکوین": "BTC",
+    "اتریوم": "ETH",
+    "سولانا": "SOL",
+    "ترون": "TRX",
+    "دوج": "DOGE",
+    "دوج کوین": "DOGE",
+    "ریپل": "XRP",
+    "بی ان بی": "BNB",
+    "تون": "TON",
+    "کاردانو": "ADA",
+    "شیبا": "SHIB",
 }
 
 
+def get_markets():
+    url = "https://api1.tabdeal.org/r/api/v1/exchangeInfo"
+
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+
+    data = response.json()
+
+    if isinstance(data, list):
+        return data
+
+    return data.get("symbols", [])
+
+
+def find_symbol(user_text):
+    text = user_text.strip().upper()
+
+    # اگر کاربر نام فارسی رایج نوشت
+    if user_text.strip() in ALIASES:
+        asset = ALIASES[user_text.strip()]
+    else:
+        asset = text
+
+    markets = get_markets()
+
+    for market in markets:
+        if market.get("status") != "TRADING":
+            continue
+
+        if market.get("quoteAsset") != "IRT":
+            continue
+
+        if market.get("baseAsset", "").upper() == asset:
+            return market.get("symbol")
+
+    return None
+
+
 def get_price(symbol):
-    url = "https://api.tabdeal.org/r/api/v1/depth"
+    url = "https://api1.tabdeal.org/r/api/v1/depth"
 
     response = requests.get(
         url,
-        params={"symbol": symbol},
+        params={
+            "symbol": symbol,
+            "limit": 1
+        },
         timeout=10
     )
 
@@ -53,11 +84,11 @@ def get_price(symbol):
     if not asks:
         return None
 
-    # ارزان‌ترین سفارش فروش
-    price_rial = float(asks[0][0])
+    # قیمت به ریال/واحد API
+    price = float(asks[0][0])
 
-    # ریال → تومان
-    return round(price_rial)
+    # طبق تست قبلی ربات، مقدار API تبدیل را مستقیماً نمایش می‌دهیم
+    return round(price)
 
 
 def send_message(chat_id, text):
@@ -89,47 +120,56 @@ def webhook():
     message = data["message"]
 
     chat_id = message["chat"]["id"]
-    text = message.get("text", "").strip().lower()
+    text = message.get("text", "").strip()
 
-    if text == "/start":
+    if text.lower() == "/start":
         send_message(
             chat_id,
             "🤖 ربات قیمت روی چارت\n\n"
-            "نام ارز را بنویسید.\n\n"
+            "نام یا نماد هر ارز را بنویسید.\n\n"
             "مثال:\n"
             "تتر\n"
             "بیت کوین\n"
-            "اتریوم\n"
-            "سولانا"
+            "BTC\n"
+            "PEPE\n"
+            "APT"
         )
         return "ok"
 
-    if text in COINS:
+    try:
 
-        symbol = COINS[text]
+        symbol = find_symbol(text)
 
-        try:
-            price = get_price(symbol)
-
-            if price:
-                send_message(
-                    chat_id,
-                    f"💰 قیمت {text}\n\n"
-                    f"🇮🇷 {price:,} تومان"
-                )
-            else:
-                send_message(
-                    chat_id,
-                    "❌ قیمت این ارز در حال حاضر دریافت نشد."
-                )
-
-        except Exception as e:
-            print("PRICE ERROR:", e)
-
+        if not symbol:
             send_message(
                 chat_id,
-                "⚠️ خطا در دریافت قیمت. لطفاً دوباره امتحان کنید."
+                "❌ این ارز در بازار تومانی تبدیل پیدا نشد."
             )
+            return "ok"
+
+        price = get_price(symbol)
+
+        if price is None:
+            send_message(
+                chat_id,
+                "❌ قیمت این ارز در حال حاضر دریافت نشد."
+            )
+            return "ok"
+
+        send_message(
+            chat_id,
+            f"💰 قیمت {text}\n\n"
+            f"🇮🇷 {price:,} تومان"
+        )
+
+    except Exception as e:
+
+        print("ERROR:", e)
+
+        send_message(
+            chat_id,
+            "⚠️ خطا در دریافت قیمت. لطفاً دوباره امتحان کنید."
+        )
 
     return "ok"
 
