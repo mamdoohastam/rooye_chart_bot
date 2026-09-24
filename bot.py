@@ -38,6 +38,10 @@ def get_price(symbol):
     url = "https://apiv2.nobitex.ir/v3/orderbook/" + symbol + "IRT"
 
     response = requests.get(url, timeout=10)
+
+    print("NOBITEX STATUS:", response.status_code)
+    print("NOBITEX RESPONSE:", response.text)
+
     data = response.json()
 
     asks = data.get("asks", [])
@@ -46,9 +50,7 @@ def get_price(symbol):
         return None
 
     price_rial = float(asks[0][0])
-    price_toman = price_rial / 10
-
-    return round(price_toman)
+    return round(price_rial / 10)
 
 
 def send_message(chat_id, text):
