@@ -14,19 +14,8 @@ DB_FILE = "analyses.db"
 
 TEHRAN = ZoneInfo("Asia/Tehran")
 
-# لینک‌های دکمه‌های شیشه‌ای
-CHANNEL_URL = os.environ.get(
-    "CHANNEL_URL",
-    "https://t.me/rooye_chart"
-)
-
-# لینک گروه را در Environment Variable با نام GROUP_URL قرار بده.
-# اگر فعلاً خالی باشد، فقط دکمه کانال نمایش داده می‌شود.
-GROUP_URL = os.environ.get(
-    "GROUP_URL",
-    ""
-)
-
+CHANNEL_URL = "https://t.me/rooye_chart"
+GROUP_URL = "https://t.me/rooye_chart_gap"
 
 
 # =========================================================
@@ -462,15 +451,13 @@ def get_today_analyses(
     connection = get_connection()
     cursor = connection.cursor()
 
-    # همه تحلیل‌های همان روز را برمی‌گرداند.
-    # حتی اگر یک ارز چند بار تحلیل شده باشد.
     cursor.execute(
         """
         SELECT symbol, message_id, message_date
         FROM analyses
         WHERE chat_id = ?
         AND date_text = ?
-        ORDER BY message_date ASC
+        ORDER BY message_date ASC, id ASC
         """,
         (
             chat_id,
@@ -497,37 +484,20 @@ def extract_analysis_request(text):
 
     normalized = normalize_text(text)
 
-    # -----------------------------------------------------
-    # فقط دو نوع درخواست معتبر:
-    #
-    # تحلیل سولانا
-    # تحلیل BLESS
-    #
-    # و:
-    # تحلیل های امروز
-    #
-    # پیام‌های عادی که کلمه «تحلیل» وسطشان آمده
-    # دیگر اینجا پردازش نمی‌شوند.
-    # -----------------------------------------------------
-
+    # فقط این عبارت دقیق، درخواست همه تحلیل‌های امروز است.
     if normalized in [
         "تحلیل های امروز",
         "تحلیل‌های امروز",
         "تحلیل امروز",
         "تحلیلهای امروز",
         "تحلیلهایامروز",
-        "تحلیلامروز",
+        "تحلیلامروز"
     ]:
-
         return "TODAY"
 
-
-    # -----------------------------------------------------
-    # فقط «تحلیل + یک نام/نماد»
-    # -----------------------------------------------------
-
+    # درخواست تحلیل باید از خود کلمه «تحلیل» شروع شود.
     match = re.fullmatch(
-        r"تحلیل\s+(.+?)",
+        r"تحلیل\s+(.+)",
         normalized
     )
 
@@ -538,21 +508,12 @@ def extract_analysis_request(text):
         match.group(1)
     )
 
-    if not remaining:
+    # فقط «تحلیل + یک نام/نماد» معتبر است.
+    if " " in remaining:
         return None
-
-
-    # -----------------------------------------------------
-    # اگر نام فارسی شناخته‌شده باشد
-    # -----------------------------------------------------
 
     if remaining in ALIASES:
         return ALIASES[remaining]
-
-
-    # -----------------------------------------------------
-    # اگر نماد انگلیسی باشد
-    # -----------------------------------------------------
 
     if re.fullmatch(
         r"[A-Za-z0-9]{2,20}",
@@ -560,19 +521,13 @@ def extract_analysis_request(text):
     ):
         return remaining.upper()
 
-
-    # -----------------------------------------------------
-    # نام فارسی ناشناخته
-    # -----------------------------------------------------
-
     if re.fullmatch(
-        r"[آ-ی‌]+",
+        r"[آ-ی‌]{2,25}",
         remaining
     ):
         return {
             "NAME": remaining
         }
-
 
     return None
 
@@ -624,11 +579,60 @@ def find_symbol(
     else:
         asset = text.upper()
 
+    # اول بازارهای متداول مستقیم را امتحان می‌کنیم.
+    # این باعث می‌شود نام‌های فارسی مثل «سولانا» به SOLIRT برسند.
+    direct_candidates = [
+        f"{asset}IRT",
+        f"{asset}TMN",
+        f"{asset}IRR"
+    ]
 
+    for market_symbol in direct_candidates:
+
+        try:
+
+            url = (
+                "https://api1.tabdeal.org/"
+                "r/api/v1/depth"
+            )
+
+            response = requests.get(
+                url,
+                params={
+                    "symbol": market_symbol,
+                    "limit": 1
+                },
+                timeout=8
+            )
+
+            if response.ok:
+
+                data = response.json()
+
+                if data.get("asks"):
+                    return market_symbol
+
+        except Exception as e:
+
+            print(
+                "DIRECT MARKET CHECK ERROR:",
+                market_symbol,
+                repr(e)
+            )
+
+
+    # اگر نام بازار مستقیم جواب نداد، از exchangeInfo کمک می‌گیریم.
     try:
+
         markets = get_markets()
+
     except Exception as e:
-        print("MARKETS ERROR:", repr(e))
+
+        print(
+            "MARKETS ERROR:",
+            repr(e)
+        )
+
         return None
 
 
@@ -641,7 +645,11 @@ def find_symbol(
             market.get("quoteAsset", "")
         ).upper()
 
-        if quote_asset not in ["IRT", "TMN", "IRR"]:
+        if quote_asset not in [
+            "IRT",
+            "TMN",
+            "IRR"
+        ]:
             continue
 
         base_asset = str(
@@ -652,16 +660,10 @@ def find_symbol(
             market.get("symbol", "")
         ).upper()
 
-        # حالت معمول
         if base_asset == asset:
             return market.get("symbol")
 
-        # بعضی نسخه‌های API ممکن است baseAsset را نداشته باشند
-        if market_symbol in [
-            asset + "IRT",
-            asset + "TMN",
-            asset + "IRR"
-        ]:
+        if market_symbol in direct_candidates:
             return market.get("symbol")
 
     return None
@@ -771,41 +773,24 @@ def send_message(
 
     payload = {
         "chat_id": chat_id,
-        "text": text
-    }
-
-
-    # -----------------------------------------------------
-    # دکمه‌های شیشه‌ای
-    # -----------------------------------------------------
-
-    buttons = []
-
-    if CHANNEL_URL:
-        buttons.append([
-            {
-                "text": "📢 کانال روی چارت",
-                "url": CHANNEL_URL
-            }
-        ])
-
-    if GROUP_URL:
-        buttons.append([
-            {
-                "text": "💬 گروه روی چارت",
-                "url": GROUP_URL
-            }
-        ])
-
-    if buttons:
-        payload["reply_markup"] = {
-            "inline_keyboard": buttons
+        "text": text,
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "📢 کانال روی چارت",
+                        "url": CHANNEL_URL
+                    }
+                ],
+                [
+                    {
+                        "text": "💬 گروه روی چارت",
+                        "url": GROUP_URL
+                    }
+                ]
+            ]
         }
-
-
-    # -----------------------------------------------------
-    # ریپلای به پیام اصلی
-    # -----------------------------------------------------
+    }
 
     if reply_to_message_id is not None:
 
@@ -815,7 +800,6 @@ def send_message(
             "message_id":
                 reply_to_message_id
         }
-
 
     response = requests.post(
         url,
@@ -987,11 +971,6 @@ def webhook():
 
                 return "ok"
 
-
-            # -------------------------------------------------
-            # اول یک فهرست از تمام تحلیل‌های امروز
-            # -------------------------------------------------
-
             reply = (
                 "📊 تمام تحلیل‌های امروز\n\n"
             )
@@ -1013,17 +992,13 @@ def webhook():
                     f"#{symbol}\n"
                 )
 
-
             send_message(
                 chat_id,
                 reply
             )
 
-
-            # -------------------------------------------------
-            # سپس خود تمام تحلیل‌ها را به ترتیب زمانی ریپلای کن
-            # -------------------------------------------------
-
+            # هر تحلیل همان روز را نیز به‌صورت ریپلای
+            # به پیام اصلی خودش نشان می‌دهیم.
             for row in results:
 
                 symbol = row[0]
