@@ -35,7 +35,7 @@ COINS = {
 }
 
 def get_price(symbol):
-    url = "https://api.nobitex.ir/v3/orderbook/" + symbol + "IRT"
+    url = "https://apiv2.nobitex.ir/v3/orderbook/" + symbol + "IRT"
 
     response = requests.get(url, timeout=10)
     data = response.json()
