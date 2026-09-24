@@ -12,6 +12,9 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 DB_FILE = "analyses.db"
 
+CHANNEL_URL = "https://t.me/rooye_chart"
+GROUP_URL = "https://t.me/rooye_chart_gap"
+
 
 # =========================
 # نام‌های فارسی رایج
@@ -314,31 +317,46 @@ def extract_analysis_request(text):
     for pattern in today_patterns:
 
         if normalized == pattern:
-
             return "TODAY"
 
 
-    # باید کلمه تحلیل وجود داشته باشد
-    if "تحلیل" not in normalized:
+    # -----------------------------------------------------
+    # مهم:
+    # درخواست تحلیل باید با خود کلمه «تحلیل» شروع شود.
+    #
+    # بنابراین:
+    # «آقا رضا تحلیل سولانا برای دوستمون بذار»
+    # دیگر درخواست تحلیل محسوب نمی‌شود.
+    # -----------------------------------------------------
 
+    if not normalized.startswith("تحلیل"):
         return None
 
 
-    # حذف عبارت تحلیل
-    remaining = normalized.replace(
-        "تحلیل",
-        ""
-    ).strip()
+    # حذف فقط «تحلیل» از ابتدای پیام
+    remaining = normalized[
+        len("تحلیل"):
+    ].strip()
 
+
+    # عبارت‌های ساده مثل:
+    # تحلیل سولانا
+    # تحلیل XRP
+    # تحلیل آخرین سولانا
+    # تحلیل های سولانا
+    # را قبول می‌کنیم.
     remaining = remaining.replace(
         "های",
-        ""
+        "",
+        1
     ).strip()
 
     remaining = remaining.replace(
         "آخرین",
-        ""
+        "",
+        1
     ).strip()
+
 
     if not remaining:
         return None
@@ -346,7 +364,6 @@ def extract_analysis_request(text):
 
     # نام فارسی
     if remaining in ALIASES:
-
         return ALIASES[remaining]
 
 
@@ -357,7 +374,6 @@ def extract_analysis_request(text):
         r"[A-Z0-9]{2,15}",
         upper
     ):
-
         return upper
 
 
@@ -531,14 +547,31 @@ def send_message(
 
     payload = {
         "chat_id": chat_id,
-        "text": text
+        "text": text,
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "📢 کانال روی چارت",
+                        "url": CHANNEL_URL
+                    },
+                    {
+                        "text": "💬 گروه روی چارت",
+                        "url": GROUP_URL
+                    }
+                ]
+            ]
+        }
     }
+
 
     if reply_to_message_id is not None:
 
         payload["reply_parameters"] = {
-            "message_id": reply_to_message_id
+            "message_id":
+                reply_to_message_id
         }
+
 
     requests.post(
         url,
@@ -661,25 +694,50 @@ def webhook():
             return "ok"
 
 
-        # حذف تکراری‌ها و نگه داشتن آخرین تحلیل هر ارز
-        latest = {}
+        # -------------------------------------------------
+        # هر پیام تحلیل فقط یک بار نمایش داده شود.
+        # اگر یک پیام چند هشتگ داشته باشد، همه نمادها
+        # کنار همان تحلیل ثبت می‌شوند.
+        # -------------------------------------------------
+
+        grouped = {}
 
         for symbol, msg_id in results:
 
-            latest[symbol] = msg_id
+            if msg_id not in grouped:
+                grouped[msg_id] = []
+
+            if symbol not in grouped[msg_id]:
+                grouped[msg_id].append(symbol)
 
 
-        reply = "📊 تحلیل‌های امروز روی چارت\n\n"
+        reply = (
+            "📊 تمام تحلیل‌های امروز "
+            "روی چارت\n\n"
+        )
 
-        for symbol, msg_id in latest.items():
 
-            name = DISPLAY_NAMES.get(
-                symbol,
-                symbol
-            )
+        for index, (msg_id, symbols) in enumerate(
+            grouped.items(),
+            start=1
+        ):
+
+            names = []
+
+            for symbol in symbols:
+
+                name = DISPLAY_NAMES.get(
+                    symbol,
+                    symbol
+                )
+
+                names.append(
+                    f"{name} #{symbol}"
+                )
 
             reply += (
-                f"• {name}  #{symbol}\n"
+                f"{index}. "
+                f"{' | '.join(names)}\n"
             )
 
 
@@ -687,6 +745,35 @@ def webhook():
             chat_id,
             reply
         )
+
+
+        # -------------------------------------------------
+        # حالا خود تمام پیام‌های تحلیل امروز را به صورت
+        # ریپلای نمایش بده.
+        # -------------------------------------------------
+
+        for msg_id in grouped:
+
+            symbols = grouped[msg_id]
+
+            names = []
+
+            for symbol in symbols:
+
+                name = DISPLAY_NAMES.get(
+                    symbol,
+                    symbol
+                )
+
+                names.append(name)
+
+
+            send_message(
+                chat_id,
+                f"📊 تحلیل {' | '.join(names)}:",
+                reply_to_message_id=msg_id
+            )
+
 
         return "ok"
 
