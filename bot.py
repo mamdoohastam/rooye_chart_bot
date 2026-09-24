@@ -19,7 +19,7 @@ TEHRAN = ZoneInfo("Asia/Tehran")
 # لینک‌های روی چارت
 # =========================================================
 
-CHANNEL_URL = "https://t.me/Rooye_chat"
+CHANNEL_URL = "https://t.me/Rooye_chart"
 GROUP_URL = "https://t.me/Rooye_chart_gap"
 
 
