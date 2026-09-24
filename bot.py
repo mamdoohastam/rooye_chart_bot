@@ -1,3 +1,4 @@
+
 from flask import Flask, request
 import requests
 import os
@@ -6,7 +7,11 @@ app = Flask(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
+
+# =========================
 # نام‌های فارسی رایج
+# =========================
+
 ALIASES = {
     "تتر": "USDT",
     "دلار": "USDT",
@@ -25,10 +30,19 @@ ALIASES = {
 }
 
 
+# =========================
+# دریافت لیست بازارها
+# =========================
+
 def get_markets():
+
     url = "https://api1.tabdeal.org/r/api/v1/exchangeInfo"
 
-    response = requests.get(url, timeout=10)
+    response = requests.get(
+        url,
+        timeout=10
+    )
+
     response.raise_for_status()
 
     data = response.json()
@@ -39,10 +53,14 @@ def get_markets():
     return data.get("symbols", [])
 
 
+# =========================
+# پیدا کردن بازار تومانی ارز
+# =========================
+
 def find_symbol(user_text):
+
     text = user_text.strip().upper()
 
-    # اگر کاربر نام فارسی رایج نوشت
     if user_text.strip() in ALIASES:
         asset = ALIASES[user_text.strip()]
     else:
@@ -51,6 +69,7 @@ def find_symbol(user_text):
     markets = get_markets()
 
     for market in markets:
+
         if market.get("status") != "TRADING":
             continue
 
@@ -58,18 +77,40 @@ def find_symbol(user_text):
             continue
 
         if market.get("baseAsset", "").upper() == asset:
+
             return market.get("symbol")
 
     return None
 
 
-def get_price(symbol):
+# =========================
+# دریافت قیمت
+# quote = IRT یا USDT
+# =========================
+
+def get_price(symbol, quote="IRT"):
+
+    # مثال:
+    # BTCIRT  -> BTCIRT
+    # BTCIRT  -> BTCUSDT
+
+    if quote == "USDT":
+
+        if symbol.endswith("IRT"):
+            market_symbol = symbol[:-3] + "USDT"
+        else:
+            market_symbol = symbol
+
+    else:
+
+        market_symbol = symbol
+
     url = "https://api1.tabdeal.org/r/api/v1/depth"
 
     response = requests.get(
         url,
         params={
-            "symbol": symbol,
+            "symbol": market_symbol,
             "limit": 1
         },
         timeout=10
@@ -84,14 +125,17 @@ def get_price(symbol):
     if not asks:
         return None
 
-    # قیمت به ریال/واحد API
     price = float(asks[0][0])
 
-    # طبق تست قبلی ربات، مقدار API تبدیل را مستقیماً نمایش می‌دهیم
-    return round(price)
+    return price
 
+
+# =========================
+# ارسال پیام به تلگرام
+# =========================
 
 def send_message(chat_id, text):
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
     requests.post(
@@ -104,10 +148,19 @@ def send_message(chat_id, text):
     )
 
 
+# =========================
+# صفحه اصلی
+# =========================
+
 @app.route("/")
 def home():
+
     return "Rooye Chart Bot is running"
 
+
+# =========================
+# Webhook تلگرام
+# =========================
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -120,62 +173,165 @@ def webhook():
     message = data["message"]
 
     chat_id = message["chat"]["id"]
+
     text = message.get("text", "").strip()
 
+
+    # =========================
+    # دستور /start
+    # =========================
+
     if text.lower() == "/start":
+
         send_message(
             chat_id,
+
             "🤖 ربات قیمت روی چارت\n\n"
+
             "نام یا نماد هر ارز را بنویسید.\n\n"
+
             "مثال:\n"
+
             "تتر\n"
             "بیت کوین\n"
             "BTC\n"
             "PEPE\n"
             "APT"
         )
+
         return "ok"
+
+
+    # =========================
+    # دریافت قیمت
+    # =========================
 
     try:
 
+        # پیدا کردن بازار تومانی
         symbol = find_symbol(text)
 
+
         if not symbol:
+
             send_message(
                 chat_id,
+
                 "❌ این ارز در بازار تومانی تبدیل پیدا نشد."
             )
+
             return "ok"
 
-        price = get_price(symbol)
 
-        if price is None:
+        # قیمت تومانی
+        toman_price = get_price(
+            symbol,
+            "IRT"
+        )
+
+
+        # قیمت تتری
+        usdt_price = None
+
+        # برای خود تتر بازار USDT/USDT وجود ندارد
+        if symbol != "USDTIRT":
+
+            try:
+
+                usdt_price = get_price(
+                    symbol,
+                    "USDT"
+                )
+
+            except Exception as e:
+
+                print(
+                    "USDT PRICE ERROR:",
+                    e
+                )
+
+                usdt_price = None
+
+
+        # اگر هیچ قیمتی پیدا نشد
+        if toman_price is None and usdt_price is None:
+
             send_message(
                 chat_id,
+
                 "❌ قیمت این ارز در حال حاضر دریافت نشد."
             )
+
             return "ok"
 
+
+        # =========================
+        # ساخت پاسخ
+        # =========================
+
+        reply = f"🪙 {text}\n\n"
+
+
+        if toman_price is not None:
+
+            reply += (
+                f"🇮🇷 تومان: "
+                f"{toman_price:,.0f}\n"
+            )
+
+
+        if text.strip() in ["تتر", "دلار"]:
+
+            reply += (
+                f"💵 تتر: "
+                f"1 USDT"
+            )
+
+        elif usdt_price is not None:
+
+            reply += (
+                f"💵 تتر: "
+                f"{usdt_price:,.8f} USDT"
+            )
+
+
+        # ارسال پاسخ
         send_message(
             chat_id,
-            f"💰 قیمت {text}\n\n"
-            f"🇮🇷 {price:,} تومان"
+            reply
         )
+
 
     except Exception as e:
 
-        print("ERROR:", e)
+        print(
+            "ERROR:",
+            e
+        )
 
         send_message(
             chat_id,
-            "⚠️ خطا در دریافت قیمت. لطفاً دوباره امتحان کنید."
+
+            "⚠️ خطا در دریافت قیمت. "
+            "لطفاً دوباره امتحان کنید."
         )
+
 
     return "ok"
 
 
+# =========================
+# اجرای برنامه
+# =========================
+
 if __name__ == "__main__":
+
     app.run(
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000))
+        port=int(
+            os.environ.get(
+                "PORT",
+                10000
+            )
+        )
     )
