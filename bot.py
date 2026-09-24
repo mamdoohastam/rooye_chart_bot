@@ -14,6 +14,20 @@ DB_FILE = "analyses.db"
 
 TEHRAN = ZoneInfo("Asia/Tehran")
 
+# لینک‌های دکمه‌های شیشه‌ای
+CHANNEL_URL = os.environ.get(
+    "CHANNEL_URL",
+    "https://t.me/rooye_chart"
+)
+
+# لینک گروه را در Environment Variable با نام GROUP_URL قرار بده.
+# اگر فعلاً خالی باشد، فقط دکمه کانال نمایش داده می‌شود.
+GROUP_URL = os.environ.get(
+    "GROUP_URL",
+    ""
+)
+
+
 
 # =========================================================
 # نام‌های فارسی شناخته‌شده
@@ -448,9 +462,11 @@ def get_today_analyses(
     connection = get_connection()
     cursor = connection.cursor()
 
+    # همه تحلیل‌های همان روز را برمی‌گرداند.
+    # حتی اگر یک ارز چند بار تحلیل شده باشد.
     cursor.execute(
         """
-        SELECT symbol, message_id
+        SELECT symbol, message_id, message_date
         FROM analyses
         WHERE chat_id = ?
         AND date_text = ?
@@ -481,103 +497,78 @@ def extract_analysis_request(text):
 
     normalized = normalize_text(text)
 
-    # ---------------------------------------------
-    # فقط اگر پیام با «تحلیل» شروع شود
-    # ---------------------------------------------
+    # -----------------------------------------------------
+    # فقط دو نوع درخواست معتبر:
+    #
+    # تحلیل سولانا
+    # تحلیل BLESS
+    #
+    # و:
+    # تحلیل های امروز
+    #
+    # پیام‌های عادی که کلمه «تحلیل» وسطشان آمده
+    # دیگر اینجا پردازش نمی‌شوند.
+    # -----------------------------------------------------
 
-    if not normalized.startswith("تحلیل"):
-
-        return None
-
-
-    # ---------------------------------------------
-    # تحلیل‌های امروز
-    # ---------------------------------------------
-
-    compact = normalized.replace(
-        " ",
-        ""
-    )
-
-    if compact in [
+    if normalized in [
+        "تحلیل های امروز",
+        "تحلیل‌های امروز",
+        "تحلیل امروز",
+        "تحلیلهای امروز",
         "تحلیلهایامروز",
         "تحلیلامروز",
-        "تحلیلهایروز"
     ]:
 
         return "TODAY"
 
 
-    # ---------------------------------------------
-    # حذف کلمه تحلیل
-    # ---------------------------------------------
+    # -----------------------------------------------------
+    # فقط «تحلیل + یک نام/نماد»
+    # -----------------------------------------------------
 
-    remaining = normalized[
-        len("تحلیل"):
-    ].strip()
+    match = re.fullmatch(
+        r"تحلیل\s+(.+?)",
+        normalized
+    )
 
+    if not match:
+        return None
+
+    remaining = normalize_text(
+        match.group(1)
+    )
 
     if not remaining:
-
         return None
 
 
-    # ---------------------------------------------
-    # اگر نام شناخته‌شده فارسی باشد
-    # ---------------------------------------------
+    # -----------------------------------------------------
+    # اگر نام فارسی شناخته‌شده باشد
+    # -----------------------------------------------------
 
     if remaining in ALIASES:
-
-        return ALIASES[
-            remaining
-        ]
+        return ALIASES[remaining]
 
 
-    # ---------------------------------------------
-    # نماد انگلیسی
-    #
-    # مثال:
-    # تحلیل XRP
-    # تحلیل BLESS
-    # ---------------------------------------------
+    # -----------------------------------------------------
+    # اگر نماد انگلیسی باشد
+    # -----------------------------------------------------
 
     if re.fullmatch(
         r"[A-Za-z0-9]{2,20}",
         remaining
     ):
-
         return remaining.upper()
 
 
-    # ---------------------------------------------
+    # -----------------------------------------------------
     # نام فارسی ناشناخته
-    #
-    # فقط یک کلمه را قبول می‌کنیم.
-    #
-    # بنابراین:
-    #
-    # تحلیل بلس
-    #
-    # قبول می‌شود.
-    #
-    # اما:
-    #
-    # آقا رضا تحلیل سولانا برای دوستمون بذار
-    #
-    # اصلاً به این تابع نمی‌رسد چون با تحلیل شروع نشده.
-    #
-    # و:
-    #
-    # تحلیل سولانا برای دوستمون
-    #
-    # نیز درخواست معتبر محسوب نمی‌شود.
-    # ---------------------------------------------
+    # -----------------------------------------------------
 
     if re.fullmatch(
         r"[آ-ی‌]+",
         remaining
     ):
-
         return {
             "NAME": remaining
         }
@@ -629,42 +620,49 @@ def find_symbol(
     )
 
     if text in ALIASES:
-
-        asset = ALIASES[
-            text
-        ]
-
+        asset = ALIASES[text]
     else:
-
         asset = text.upper()
 
 
-    markets = get_markets()
+    try:
+        markets = get_markets()
+    except Exception as e:
+        print("MARKETS ERROR:", repr(e))
+        return None
+
 
     for market in markets:
 
-        if market.get(
-            "status"
-        ) != "TRADING":
-
+        if market.get("status") != "TRADING":
             continue
 
-        if market.get(
-            "quoteAsset"
-        ) != "IRT":
-
-            continue
-
-        base_asset = market.get(
-            "baseAsset",
-            ""
+        quote_asset = str(
+            market.get("quoteAsset", "")
         ).upper()
 
-        if base_asset == asset:
+        if quote_asset not in ["IRT", "TMN", "IRR"]:
+            continue
 
-            return market.get(
-                "symbol"
-            )
+        base_asset = str(
+            market.get("baseAsset", "")
+        ).upper()
+
+        market_symbol = str(
+            market.get("symbol", "")
+        ).upper()
+
+        # حالت معمول
+        if base_asset == asset:
+            return market.get("symbol")
+
+        # بعضی نسخه‌های API ممکن است baseAsset را نداشته باشند
+        if market_symbol in [
+            asset + "IRT",
+            asset + "TMN",
+            asset + "IRR"
+        ]:
+            return market.get("symbol")
 
     return None
 
@@ -776,6 +774,39 @@ def send_message(
         "text": text
     }
 
+
+    # -----------------------------------------------------
+    # دکمه‌های شیشه‌ای
+    # -----------------------------------------------------
+
+    buttons = []
+
+    if CHANNEL_URL:
+        buttons.append([
+            {
+                "text": "📢 کانال روی چارت",
+                "url": CHANNEL_URL
+            }
+        ])
+
+    if GROUP_URL:
+        buttons.append([
+            {
+                "text": "💬 گروه روی چارت",
+                "url": GROUP_URL
+            }
+        ])
+
+    if buttons:
+        payload["reply_markup"] = {
+            "inline_keyboard": buttons
+        }
+
+
+    # -----------------------------------------------------
+    # ریپلای به پیام اصلی
+    # -----------------------------------------------------
+
     if reply_to_message_id is not None:
 
         payload[
@@ -785,10 +816,17 @@ def send_message(
                 reply_to_message_id
         }
 
-    requests.post(
+
+    response = requests.post(
         url,
         json=payload,
         timeout=10
+    )
+
+    print(
+        "SEND MESSAGE:",
+        response.status_code,
+        response.text[:300]
     )
 
 
@@ -950,22 +988,20 @@ def webhook():
                 return "ok"
 
 
-            latest = {}
-
-            for symbol, msg_id in results:
-
-                latest[
-                    symbol
-                ] = msg_id
-
+            # -------------------------------------------------
+            # اول یک فهرست از تمام تحلیل‌های امروز
+            # -------------------------------------------------
 
             reply = (
-                "📊 تحلیل‌های امروز "
-                "روی چارت\n\n"
+                "📊 تمام تحلیل‌های امروز\n\n"
             )
 
+            for index, row in enumerate(
+                results,
+                start=1
+            ):
 
-            for symbol, msg_id in latest.items():
+                symbol = row[0]
 
                 name = DISPLAY_NAMES.get(
                     symbol,
@@ -973,7 +1009,7 @@ def webhook():
                 )
 
                 reply += (
-                    f"• {name} "
+                    f"{index}. {name} "
                     f"#{symbol}\n"
                 )
 
@@ -982,6 +1018,28 @@ def webhook():
                 chat_id,
                 reply
             )
+
+
+            # -------------------------------------------------
+            # سپس خود تمام تحلیل‌ها را به ترتیب زمانی ریپلای کن
+            # -------------------------------------------------
+
+            for row in results:
+
+                symbol = row[0]
+                original_message_id = row[1]
+
+                name = DISPLAY_NAMES.get(
+                    symbol,
+                    symbol
+                )
+
+                send_message(
+                    chat_id,
+                    f"📊 تحلیل {name}:",
+                    reply_to_message_id=
+                        original_message_id
+                )
 
             return "ok"
 
