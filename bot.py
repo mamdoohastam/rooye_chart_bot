@@ -2,7 +2,7 @@ import os
 import requests
 from flask import Flask, request
 
-app = Flask(name)
+app = Flask(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
