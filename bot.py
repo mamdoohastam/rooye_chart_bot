@@ -1,22 +1,30 @@
 from flask import Flask, request
 import requests
 import os
-import re
 import sqlite3
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 app = Flask(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+
 DB_FILE = "analyses.db"
+
+TEHRAN = ZoneInfo("Asia/Tehran")
 
 
 # =========================================================
-# نام‌های فارسی ارزها
+# نام فارسی ارزها مطابق نام‌های رایج در تبدیل
 # =========================================================
 
 ALIASES = {
+
+    # -------------------------
+    # اصلی
+    # -------------------------
+
     "تتر": "USDT",
     "دلار": "USDT",
 
@@ -25,60 +33,302 @@ ALIASES = {
     "بیت‌کوین": "BTC",
 
     "اتریوم": "ETH",
+
     "سولانا": "SOL",
+
+    "ریپل": "XRP",
+
     "ترون": "TRX",
 
     "دوج": "DOGE",
     "دوج کوین": "DOGE",
     "دوج‌کوین": "DOGE",
 
-    "ریپل": "XRP",
-
     "بی ان بی": "BNB",
     "بی‌ان‌بی": "BNB",
 
-    "تون": "TON",
     "کاردانو": "ADA",
 
-    "شیبا": "SHIB",
-    "پپه": "PEPE",
-    "آپتوس": "APT",
-    "نات": "NOT",
-
-    "چین لینک": "LINK",
-    "چین‌لینک": "LINK",
+    "تون": "TON",
+    "تون کوین": "TON",
 
     "پولکادات": "DOT",
+
     "آوالانچ": "AVAX",
 
     "لایت کوین": "LTC",
     "لایت‌کوین": "LTC",
-}
 
+    "شیبا": "SHIB",
 
-# =========================================================
-# نام‌های قابل جستجوی تحلیلگران
-# =========================================================
+    "پپه": "PEPE",
 
-ANALYST_ALIASES = {
-    "رضا": "REZA",
-    "re​za": "REZA",
+    "چین لینک": "LINK",
+    "چین‌لینک": "LINK",
 
-    "چراغی": "CHERAGHI",
-    "رضا چراغی": "CHERAGHI",
-    "reza ch": "CHERAGHI",
+    # -------------------------
+    # ارزهای لایه اول / معروف
+    # -------------------------
 
-    "سلیمانی": "SOLEIMANI",
-    "آقای سلیمانی": "SOLEIMANI",
-    "ایرانمان": "SOLEIMANI",
-    "iranman": "SOLEIMANI",
-}
+    "نیر": "NEAR",
 
+    "آپتوس": "APT",
 
-ANALYST_NAMES = {
-    "REZA": "رضا",
-    "CHERAGHI": "آقای چراغی",
-    "SOLEIMANI": "آقای سلیمانی",
+    "سویی": "SUI",
+
+    "کازماس": "ATOM",
+
+    "الگورند": "ALGO",
+
+    "هدرا": "HBAR",
+
+    "استلار": "XLM",
+
+    "الگوراند": "ALGO",
+
+    "تزوس": "XTZ",
+
+    "ایاس": "EOS",
+
+    "مونرو": "XMR",
+
+    "کوانت": "QNT",
+
+    "فلو": "FLOW",
+
+    "اینترنت کامپیوتر": "ICP",
+
+    "کاسپا": "KAS",
+
+    "کرونوس": "CRO",
+
+    "هلیوم": "HNT",
+
+    "رندر": "RENDER",
+    "رندر توکن": "RENDER",
+
+    # -------------------------
+    # اتریوم / DeFi
+    # -------------------------
+
+    "یونی سواپ": "UNI",
+    "یونی‌سواپ": "UNI",
+
+    "آوه": "AAVE",
+
+    "میکر": "MKR",
+
+    "لیدو": "LDO",
+
+    "میکر دائو": "MKR",
+
+    "پنکیک سواپ": "CAKE",
+    "پنکیک‌سواپ": "CAKE",
+
+    "سوشی": "SUSHI",
+
+    "کامپاند": "COMP",
+
+    "کریو": "CRV",
+
+    "مپل": "MPL",
+
+    # -------------------------
+    # لایه دوم
+    # -------------------------
+
+    "آربیتروم": "ARB",
+
+    "آپتیمیسم": "OP",
+
+    "استارک نت": "STRK",
+    "استارک‌نت": "STRK",
+
+    "منتل": "MNT",
+
+    "زک سینک": "ZK",
+    "zk": "ZK",
+
+    "اسکرول": "SCR",
+
+    "پالیگان": "POL",
+    "متیک": "POL",
+
+    # -------------------------
+    # پروژه‌های جدیدتر
+    # -------------------------
+
+    "سلستیا": "TIA",
+
+    "مانتا": "MANTA",
+
+    "جیتو": "JTO",
+
+    "جاپیتر": "JUP",
+
+    "پایت": "PYTH",
+
+    "پندل": "PENDLE",
+
+    "بلاسوم": "BLAST",
+
+    "زد کی سینک": "ZK",
+
+    # -------------------------
+    # هوش مصنوعی
+    # -------------------------
+
+    "فت": "FET",
+    "آلترا": "TAO",
+    "بیت تنسور": "TAO",
+
+    "آکاش": "AKT",
+
+    "ورلد کوین": "WLD",
+
+    "ورلد": "WLD",
+
+    "بیتنسر": "TAO",
+
+    # -------------------------
+    # گیمینگ
+    # -------------------------
+
+    "ایموتبل ایکس": "IMX",
+
+    "سندباکس": "SAND",
+
+    "مانا": "MANA",
+
+    "انجین": "ENJ",
+
+    "گالا": "GALA",
+
+    "ایپ کوین": "APE",
+
+    "رون": "RON",
+
+    # -------------------------
+    # میم کوین
+    # -------------------------
+
+    "فلوکی": "FLOKI",
+
+    "بونک": "BONK",
+
+    "برِت": "BRETT",
+
+    "بون": "BONE",
+
+    "شیبا اینو": "SHIB",
+
+    # -------------------------
+    # قدیمی / شناخته‌شده
+    # -------------------------
+
+    "لیسک": "LSK",
+
+    "ریون": "RVN",
+
+    "ویچین": "VET",
+
+    "اتم": "ATOM",
+
+    "ایپ کوین": "APE",
+
+    "تزوس": "XTZ",
+
+    "نم": "XEM",
+
+    "دش": "DASH",
+
+    "زی کش": "ZEC",
+    "زی‌کش": "ZEC",
+
+    "دیکرد": "DCR",
+
+    # -------------------------
+    # توکن‌های مختلف
+    # -------------------------
+
+    "وتور توکن": "VTHO",
+
+    "توکو توکن": "TKO",
+
+    "تراست والت توکن": "TWT",
+
+    "اس اس وی": "SSV",
+
+    "آربیتروم": "ARB",
+
+    "استارک نت": "STRK",
+
+    "اسکیل": "SKL",
+
+    "انکر": "ANKR",
+
+    "سلر": "CELR",
+
+    "اسک": "SKL",
+
+    "بند": "BAND",
+
+    "اوشن": "OCEAN",
+
+    "گراف": "GRT",
+
+    "سان": "SUN",
+
+    "آربی": "ARB",
+
+    # -------------------------
+    # TON / Telegram
+    # -------------------------
+
+    "نات کوین": "NOT",
+
+    "نات": "NOT",
+
+    "داگز": "DOGS",
+
+    "همستر": "HMSTR",
+
+    # -------------------------
+    # موارد خاص
+    # -------------------------
+
+    "تورچین": "RUNE",
+
+    "تورچین": "RUNE",
+
+    "کرو دائو": "CRV",
+
+    "سینتتیکس": "SNX",
+
+    "آپتوس": "APT",
+
+    "استکس": "STX",
+
+    "استک": "STX",
+
+    "کانستنت": "CONST",
+
+    "فایل کوین": "FIL",
+
+    "آربیتروم": "ARB",
+
+    "اینجکتیو": "INJ",
+
+    "سِی": "SEI",
+    "سی": "SEI",
+
+    "مانترا": "OM",
+
+    "اوندو": "ONDO",
+
+    "بِراچین": "BERA",
+
+    "برچین": "BERA",
 }
 
 
@@ -88,53 +338,43 @@ ANALYST_NAMES = {
 
 def get_db():
 
-    connection = sqlite3.connect(
+    conn = sqlite3.connect(
         DB_FILE,
         timeout=10
     )
 
-    connection.row_factory = sqlite3.Row
+    conn.row_factory = sqlite3.Row
 
-    return connection
+    return conn
 
 
-def init_database():
+def init_db():
 
-    connection = get_db()
+    conn = get_db()
 
-    cursor = connection.cursor()
+    cursor = conn.cursor()
 
-    # جدول تحلیل‌ها
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS analyses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             chat_id INTEGER NOT NULL,
             message_id INTEGER NOT NULL,
             symbol TEXT NOT NULL,
-            analyst TEXT NOT NULL,
             message_date INTEGER NOT NULL,
             date_text TEXT NOT NULL
         )
     """)
 
-    # جدول تحلیلگران
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS analysts (
-            user_id INTEGER PRIMARY KEY,
-            analyst TEXT NOT NULL,
-            registered_at INTEGER NOT NULL
-        )
-    """)
+    conn.commit()
 
-    connection.commit()
-    connection.close()
+    conn.close()
 
 
-init_database()
+init_db()
 
 
 # =========================================================
-# نرمال‌سازی
+# نرمال سازی فارسی
 # =========================================================
 
 def normalize_text(text):
@@ -144,9 +384,25 @@ def normalize_text(text):
 
     text = text.strip()
 
-    text = text.replace("ي", "ی")
-    text = text.replace("ى", "ی")
-    text = text.replace("ك", "ک")
+    text = text.replace(
+        "ي",
+        "ی"
+    )
+
+    text = text.replace(
+        "ى",
+        "ی"
+    )
+
+    text = text.replace(
+        "ك",
+        "ک"
+    )
+
+    text = text.replace(
+        "‌",
+        " "
+    )
 
     text = re.sub(
         r"\s+",
@@ -158,431 +414,7 @@ def normalize_text(text):
 
 
 # =========================================================
-# تشخیص هشتگ ارز
-# =========================================================
-
-def extract_analysis_symbols(caption):
-
-    if not caption:
-        return []
-
-    hashtags = re.findall(
-        r"#([A-Za-z0-9_]+)",
-        caption
-    )
-
-    symbols = []
-
-    for hashtag in hashtags:
-
-        symbol = hashtag.upper()
-
-        if re.fullmatch(
-            r"[A-Z0-9]{2,15}",
-            symbol
-        ):
-
-            symbols.append(symbol)
-
-    return list(set(symbols))
-
-
-# =========================================================
-# ذخیره تحلیل
-# =========================================================
-
-def save_analysis(
-    chat_id,
-    message_id,
-    symbol,
-    analyst,
-    message_date
-):
-
-    tehran_time = datetime.fromtimestamp(
-        message_date,
-        tz=ZoneInfo("Asia/Tehran")
-    )
-
-    date_text = tehran_time.strftime(
-        "%Y-%m-%d"
-    )
-
-    connection = get_db()
-
-    cursor = connection.cursor()
-
-    cursor.execute(
-        """
-        INSERT INTO analyses
-        (
-            chat_id,
-            message_id,
-            symbol,
-            analyst,
-            message_date,
-            date_text
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            chat_id,
-            message_id,
-            symbol,
-            analyst,
-            message_date,
-            date_text
-        )
-    )
-
-    connection.commit()
-    connection.close()
-
-    print(
-        f"SAVED ANALYSIS: "
-        f"{symbol} | "
-        f"{analyst} | "
-        f"chat={chat_id} | "
-        f"message={message_id}"
-    )
-
-
-# =========================================================
-# پیدا کردن تحلیلگر از روی User ID
-# =========================================================
-
-def get_registered_analyst(user_id):
-
-    connection = get_db()
-
-    cursor = connection.cursor()
-
-    cursor.execute(
-        """
-        SELECT analyst
-        FROM analysts
-        WHERE user_id = ?
-        """,
-        (user_id,)
-    )
-
-    result = cursor.fetchone()
-
-    connection.close()
-
-    if result:
-        return result["analyst"]
-
-    return None
-
-
-# =========================================================
-# ثبت تحلیلگر
-# =========================================================
-
-def register_analyst(
-    user_id,
-    analyst
-):
-
-    connection = get_db()
-
-    cursor = connection.cursor()
-
-    now = int(
-        datetime.now().timestamp()
-    )
-
-    cursor.execute(
-        """
-        INSERT OR REPLACE INTO analysts
-        (
-            user_id,
-            analyst,
-            registered_at
-        )
-        VALUES (?, ?, ?)
-        """,
-        (
-            user_id,
-            analyst,
-            now
-        )
-    )
-
-    connection.commit()
-    connection.close()
-
-
-# =========================================================
-# تشخیص نام تحلیلگر
-# =========================================================
-
-def find_analyst(text):
-
-    normalized = normalize_text(
-        text
-    ).lower()
-
-    # از طولانی‌ترین نام به کوتاه‌ترین
-    names = sorted(
-        ANALYST_ALIASES.keys(),
-        key=len,
-        reverse=True
-    )
-
-    for name in names:
-
-        if name.lower() in normalized:
-
-            return ANALYST_ALIASES[name]
-
-    return None
-
-
-# =========================================================
-# تشخیص ارز در درخواست تحلیل
-# =========================================================
-
-def find_requested_symbol(text):
-
-    normalized = normalize_text(
-        text
-    )
-
-    # ابتدا نام‌های فارسی
-    aliases = sorted(
-        ALIASES.keys(),
-        key=len,
-        reverse=True
-    )
-
-    for alias in aliases:
-
-        if alias in normalized:
-
-            return ALIASES[alias]
-
-    # سپس نماد انگلیسی
-    words = re.findall(
-        r"[A-Za-z0-9]{2,15}",
-        normalized
-    )
-
-    # حذف کلمات مربوط به تحلیلگر
-    ignored = {
-        "تحلیل",
-        "TODAY",
-        "REZA",
-        "CHERAGHI",
-        "SOLEIMANI"
-    }
-
-    for word in words:
-
-        upper = word.upper()
-
-        if upper in ignored:
-            continue
-
-        if re.fullmatch(
-            r"[A-Z0-9]{2,15}",
-            upper
-        ):
-
-            return upper
-
-    return None
-
-
-# =========================================================
-# آخرین تحلیل یک ارز و یک تحلیلگر
-# =========================================================
-
-def get_latest_analysis(
-    chat_id,
-    symbol,
-    analyst=None
-):
-
-    connection = get_db()
-
-    cursor = connection.cursor()
-
-    if analyst:
-
-        cursor.execute(
-            """
-            SELECT *
-            FROM analyses
-            WHERE chat_id = ?
-            AND symbol = ?
-            AND analyst = ?
-            ORDER BY message_date DESC
-            LIMIT 1
-            """,
-            (
-                chat_id,
-                symbol,
-                analyst
-            )
-        )
-
-    else:
-
-        cursor.execute(
-            """
-            SELECT *
-            FROM analyses
-            WHERE chat_id = ?
-            AND symbol = ?
-            ORDER BY message_date DESC
-            LIMIT 1
-            """,
-            (
-                chat_id,
-                symbol
-            )
-        )
-
-    result = cursor.fetchone()
-
-    connection.close()
-
-    return result
-
-
-# =========================================================
-# آخرین تحلیل هر سه تحلیلگر
-# =========================================================
-
-def get_latest_all_analysts(
-    chat_id,
-    symbol
-):
-
-    results = []
-
-    for analyst in [
-        "REZA",
-        "CHERAGHI",
-        "SOLEIMANI"
-    ]:
-
-        result = get_latest_analysis(
-            chat_id,
-            symbol,
-            analyst
-        )
-
-        if result:
-            results.append(result)
-
-    return results
-
-
-# =========================================================
-# تمام تحلیل‌های امروز
-# =========================================================
-
-def get_today_analyses(chat_id):
-
-    today = datetime.now(
-        ZoneInfo("Asia/Tehran")
-    ).strftime("%Y-%m-%d")
-
-    connection = get_db()
-
-    cursor = connection.cursor()
-
-    cursor.execute(
-        """
-        SELECT *
-        FROM analyses
-        WHERE chat_id = ?
-        AND date_text = ?
-        ORDER BY message_date ASC
-        """,
-        (
-            chat_id,
-            today
-        )
-    )
-
-    results = cursor.fetchall()
-
-    connection.close()
-
-    return results
-
-
-# =========================================================
-# نام نمایشی ارز
-# =========================================================
-
-DISPLAY_NAMES = {
-    "BTC": "بیت‌کوین",
-    "ETH": "اتریوم",
-    "SOL": "سولانا",
-    "TRX": "ترون",
-    "DOGE": "دوج‌کوین",
-    "XRP": "ریپل",
-    "BNB": "BNB",
-    "TON": "TON",
-    "ADA": "کاردانو",
-    "SHIB": "شیبا",
-    "PEPE": "PEPE",
-    "APT": "APT",
-    "NOT": "NOT",
-    "LINK": "چین‌لینک",
-    "DOT": "پولکادات",
-    "AVAX": "آوالانچ",
-    "LTC": "لایت‌کوین",
-    "USDT": "تتر",
-}
-
-
-# =========================================================
-# تشخیص «تحلیل امروز»
-# =========================================================
-
-def is_today_request(text):
-
-    normalized = normalize_text(
-        text
-    )
-
-    normalized = normalized.replace(
-        "‌",
-        ""
-    )
-
-    return (
-        normalized == "تحلیلهای امروز"
-        or
-        normalized == "تحلیل های امروز"
-        or
-        normalized == "تحلیل امروز"
-    )
-
-
-# =========================================================
-# تشخیص درخواست تحلیل
-# =========================================================
-
-def is_analysis_request(text):
-
-    normalized = normalize_text(
-        text
-    )
-
-    return (
-        "تحلیل" in normalized
-    )
-
-
-# =========================================================
-# دریافت بازارها از تبدیل
+# گرفتن بازارهای تبدیل
 # =========================================================
 
 def get_markets():
@@ -612,72 +444,93 @@ def get_markets():
 
 
 # =========================================================
-# تشخیص پیام شبیه ارز
+# پیدا کردن نماد از متن
 # =========================================================
 
-def looks_like_coin(text):
+def find_symbol_from_text(text):
 
     text = normalize_text(
         text
     )
 
-    if text in ALIASES:
-        return True
+    lower = text.lower()
 
-    if len(text.split()) > 3:
-        return False
+    # اول نام فارسی
+    aliases = sorted(
+        ALIASES.items(),
+        key=lambda x: len(x[0]),
+        reverse=True
+    )
 
-    if re.fullmatch(
-        r"[A-Za-z0-9]{2,15}",
+    for name, symbol in aliases:
+
+        if name.lower() in lower:
+
+            return symbol
+
+
+    # اگر نام فارسی پیدا نشد،
+    # دنبال نماد انگلیسی بگرد
+
+    words = re.findall(
+        r"[A-Za-z0-9]{2,20}",
         text
-    ):
-        return True
+    )
 
-    if re.fullmatch(
-        r"[آ-ی‌]{2,20}",
-        text
-    ):
-        return True
+    ignored = {
+        "تحلیل",
+        "امروز",
+        "TODAY"
+    }
 
-    return False
+    for word in words:
+
+        upper = word.upper()
+
+        if upper in ignored:
+            continue
+
+        if re.fullmatch(
+            r"[A-Z0-9]{2,20}",
+            upper
+        ):
+
+            return upper
+
+
+    return None
 
 
 # =========================================================
 # پیدا کردن بازار تومانی
 # =========================================================
 
-def find_symbol(user_text):
+def find_irt_market(asset):
 
-    text = normalize_text(
-        user_text
-    )
-
-    upper_text = text.upper()
-
-    if text in ALIASES:
-
-        asset = ALIASES[text]
-
-    else:
-
-        asset = upper_text
+    asset = asset.upper()
 
     markets = get_markets()
 
     for market in markets:
 
-        if market.get("status") != "TRADING":
+        if market.get(
+            "status"
+        ) != "TRADING":
+
             continue
 
-        if market.get("quoteAsset") != "IRT":
+        if market.get(
+            "quoteAsset"
+        ) != "IRT":
+
             continue
 
-        base_asset = market.get(
+        base = market.get(
             "baseAsset",
             ""
         ).upper()
 
-        if base_asset == asset:
+        if base == asset:
 
             return market.get(
                 "symbol"
@@ -691,25 +544,8 @@ def find_symbol(user_text):
 # =========================================================
 
 def get_price(
-    symbol,
-    quote="IRT"
+    symbol
 ):
-
-    if quote == "USDT":
-
-        if symbol.endswith("IRT"):
-
-            market_symbol = (
-                symbol[:-3] + "USDT"
-            )
-
-        else:
-
-            market_symbol = symbol
-
-    else:
-
-        market_symbol = symbol
 
     url = (
         "https://api1.tabdeal.org/"
@@ -719,7 +555,7 @@ def get_price(
     response = requests.get(
         url,
         params={
-            "symbol": market_symbol,
+            "symbol": symbol,
             "limit": 1
         },
         timeout=10
@@ -744,13 +580,263 @@ def get_price(
 
 
 # =========================================================
+# استخراج هشتگ‌های تحلیل
+# =========================================================
+
+def extract_symbols_from_caption(
+    caption
+):
+
+    if not caption:
+
+        return []
+
+    hashtags = re.findall(
+        r"#([A-Za-z0-9_]+)",
+        caption
+    )
+
+    symbols = []
+
+    for hashtag in hashtags:
+
+        symbol = hashtag.upper()
+
+        if re.fullmatch(
+            r"[A-Z0-9]{2,20}",
+            symbol
+        ):
+
+            symbols.append(
+                symbol
+            )
+
+    return list(
+        dict.fromkeys(symbols)
+    )
+
+
+# =========================================================
+# ذخیره تحلیل
+# =========================================================
+
+def save_analysis(
+    chat_id,
+    message_id,
+    symbol,
+    message_date
+):
+
+    dt = datetime.fromtimestamp(
+        message_date,
+        tz=TEHRAN
+    )
+
+    date_text = dt.strftime(
+        "%Y-%m-%d"
+    )
+
+    conn = get_db()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO analyses
+        (
+            chat_id,
+            message_id,
+            symbol,
+            message_date,
+            date_text
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            chat_id,
+            message_id,
+            symbol,
+            message_date,
+            date_text
+        )
+    )
+
+    conn.commit()
+
+    conn.close()
+
+
+# =========================================================
+# آخرین تحلیل یک ارز
+# =========================================================
+
+def get_latest_analysis(
+    chat_id,
+    symbol
+):
+
+    conn = get_db()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM analyses
+        WHERE chat_id = ?
+        AND symbol = ?
+        ORDER BY message_date DESC
+        LIMIT 1
+        """,
+        (
+            chat_id,
+            symbol
+        )
+    )
+
+    result = cursor.fetchone()
+
+    conn.close()
+
+    return result
+
+
+# =========================================================
+# آخرین تحلیل‌های امروز، بدون تکرار ارز
+# =========================================================
+
+def get_today_latest_analyses(
+    chat_id
+):
+
+    today = datetime.now(
+        TEHRAN
+    ).strftime(
+        "%Y-%m-%d"
+    )
+
+    conn = get_db()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM analyses
+        WHERE chat_id = ?
+        AND date_text = ?
+        ORDER BY message_date DESC
+        """,
+        (
+            chat_id,
+            today
+        )
+    )
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+
+    # فقط آخرین تحلیل هر ارز
+    latest = {}
+
+    for row in rows:
+
+        symbol = row["symbol"]
+
+        if symbol not in latest:
+
+            latest[symbol] = row
+
+
+    return list(
+        latest.values()
+    )
+
+
+# =========================================================
+# نام نمایشی ارز
+# =========================================================
+
+DISPLAY_NAMES = {
+
+    "BTC": "بیت‌کوین",
+    "ETH": "اتریوم",
+    "SOL": "سولانا",
+    "XRP": "ریپل",
+    "TRX": "ترون",
+    "DOGE": "دوج‌کوین",
+    "BNB": "BNB",
+    "ADA": "کاردانو",
+    "TON": "تون کوین",
+    "DOT": "پولکادات",
+    "AVAX": "آوالانچ",
+    "LTC": "لایت‌کوین",
+    "SHIB": "شیبا",
+    "PEPE": "پپه",
+    "LINK": "چین‌لینک",
+    "APT": "آپتوس",
+    "SUI": "سویی",
+    "ARB": "آربیتروم",
+    "OP": "آپتیمیسم",
+    "STRK": "استارک‌نت",
+    "TIA": "سلستیا",
+    "MANTA": "مانتا",
+    "FET": "فت",
+    "TAO": "بیت‌تنسر",
+    "WLD": "ورلد کوین",
+    "INJ": "اینجکتیو",
+    "NEAR": "نیر",
+    "ICP": "اینترنت کامپیوتر",
+    "HBAR": "هدرا",
+    "XLM": "استلار",
+    "ALGO": "الگوراند",
+    "XTZ": "تزوس",
+    "ATOM": "کازماس",
+    "ICP": "اینترنت کامپیوتر",
+    "KAS": "کاسپا",
+    "RENDER": "رندر",
+    "AAVE": "آوه",
+    "UNI": "یونی‌سواپ",
+    "MKR": "میکر",
+    "LDO": "لیدو",
+    "CAKE": "پنکیک‌سواپ",
+    "SAND": "سندباکس",
+    "MANA": "مانا",
+    "IMX": "ایمیوتبل ایکس",
+    "GALA": "گالا",
+    "APE": "ایپ کوین",
+    "FLOKI": "فلوکی",
+    "BONK": "بونک",
+    "LSK": "لیسک",
+    "VET": "ویچین",
+    "DASH": "دش",
+    "ZEC": "زی‌کش",
+    "FIL": "فایل‌کوین",
+    "STX": "استکس",
+    "SEI": "سی",
+    "OM": "مانترا",
+    "ONDO": "اوندو",
+    "NOT": "نات‌کوین",
+    "DOGS": "داگز",
+    "HMSTR": "همستر",
+    "RUNE": "تورچین",
+    "SNX": "سینتتیکس",
+    "VTHO": "وتور توکن",
+    "TWT": "تراست والت توکن",
+    "TKO": "توکو توکن",
+}
+
+
+# =========================================================
 # ارسال پیام
 # =========================================================
 
 def send_message(
     chat_id,
     text,
-    reply_to_message_id=None
+    reply_to=None
 ):
 
     url = (
@@ -763,11 +849,12 @@ def send_message(
         "text": text
     }
 
-    if reply_to_message_id is not None:
+    if reply_to:
 
-        payload["reply_parameters"] = {
-            "message_id":
-                reply_to_message_id
+        payload[
+            "reply_parameters"
+        ] = {
+            "message_id": reply_to
         }
 
     requests.post(
@@ -778,7 +865,76 @@ def send_message(
 
 
 # =========================================================
-# صفحه اصلی
+# تشخیص درخواست تحلیل
+# =========================================================
+
+def is_analysis_request(
+    text
+):
+
+    text = normalize_text(
+        text
+    )
+
+    return (
+        "تحلیل" in text
+    )
+
+
+# =========================================================
+# تشخیص درخواست تحلیل‌های امروز
+# =========================================================
+
+def is_today_request(
+    text
+):
+
+    text = normalize_text(
+        text
+    )
+
+    compact = text.replace(
+        " ",
+        ""
+    )
+
+    return (
+        compact == "تحلیلهایامروز"
+        or
+        compact == "تحلیلهایروز"
+        or
+        compact == "تحلیلامروز"
+    )
+
+
+# =========================================================
+# تشخیص اینکه پیام احتمالاً درخواست قیمت است
+# =========================================================
+
+def looks_like_coin(
+    text
+):
+
+    text = normalize_text(
+        text
+    )
+
+    if text in ALIASES:
+
+        return True
+
+    if re.fullmatch(
+        r"[A-Za-z0-9]{2,20}",
+        text
+    ):
+
+        return True
+
+    return False
+
+
+# =========================================================
+# Home
 # =========================================================
 
 @app.route("/")
@@ -797,327 +953,230 @@ def home():
 )
 def webhook():
 
-    data = request.get_json()
+    try:
 
-    if not data:
+        data = request.get_json()
 
-        return "ok"
-
-    if "message" not in data:
-
-        return "ok"
-
-    message = data["message"]
-
-    chat_id = message["chat"]["id"]
-
-    chat_type = message["chat"].get(
-        "type",
-        "private"
-    )
-
-    message_id = message.get(
-        "message_id"
-    )
-
-    message_date = message.get(
-        "date"
-    )
-
-    sender = message.get(
-        "from",
-        {}
-    )
-
-    user_id = sender.get(
-        "id"
-    )
-
-
-    # =====================================================
-    # پیام متنی
-    # =====================================================
-
-    text = message.get(
-        "text",
-        ""
-    ).strip()
-
-
-    # =====================================================
-    # ثبت تحلیلگر
-    # =====================================================
-
-    if text.startswith("/register"):
-
-        # فقط در چت خصوصی
-        if chat_type != "private":
-
-            send_message(
-                chat_id,
-                "❌ ثبت تحلیلگر باید "
-                "در چت خصوصی ربات انجام شود."
-            )
+        if not data:
 
             return "ok"
 
 
-        parts = text.split(
-            maxsplit=1
-        )
-
-        if len(parts) < 2:
-
-            send_message(
-                chat_id,
-                "فرمت صحیح:\n\n"
-                "/register رضا\n"
-                "/register چراغی\n"
-                "/register سلیمانی"
-            )
+        if "message" not in data:
 
             return "ok"
 
 
-        requested_name = normalize_text(
-            parts[1]
-        ).lower()
+        message = data[
+            "message"
+        ]
 
-
-        # تبدیل نام به شناسه داخلی
-        analyst = None
-
-        for name, code in ANALYST_ALIASES.items():
-
-            if requested_name == name.lower():
-
-                analyst = code
-                break
-
-
-        if analyst is None:
-
-            send_message(
-                chat_id,
-                "❌ نام تحلیلگر شناخته نشد.\n\n"
-                "یکی از این سه نام را وارد کنید:\n"
-                "رضا\n"
-                "چراغی\n"
-                "سلیمانی"
-            )
-
-            return "ok"
-
-
-        register_analyst(
-            user_id,
-            analyst
+        chat = message.get(
+            "chat",
+            {}
         )
 
-        send_message(
-            chat_id,
-            "✅ ثبت شد.\n\n"
-            f"شما به عنوان "
-            f"«{ANALYST_NAMES[analyst]}» "
-            f"ثبت شدید.\n\n"
-            "از این به بعد برای ثبت تحلیل "
-            "فقط هشتگ ارز را اضافه کنید.\n\n"
-            "مثال:\n"
-            "#SOL"
+        chat_id = chat.get(
+            "id"
         )
 
-        print(
-            f"REGISTERED ANALYST: "
-            f"user={user_id} "
-            f"analyst={analyst}"
-        )
-
-        return "ok"
-
-
-    # =====================================================
-    # بررسی پیام عکس و ثبت تحلیل
-    # =====================================================
-
-    if "photo" in message:
-
-        caption = message.get(
-            "caption",
+        chat_type = chat.get(
+            "type",
             ""
         )
 
-        symbols = (
-            extract_analysis_symbols(
-                caption
+        message_id = message.get(
+            "message_id"
+        )
+
+        message_date = message.get(
+            "date",
+            int(
+                datetime.now().timestamp()
             )
         )
 
-        if symbols:
 
-            analyst = get_registered_analyst(
-                user_id
+        # =================================================
+        # ثبت تحلیل از روی عکس + هشتگ
+        # =================================================
+
+        if "photo" in message:
+
+            caption = message.get(
+                "caption",
+                ""
             )
 
-            if analyst:
+            symbols = (
+                extract_symbols_from_caption(
+                    caption
+                )
+            )
 
-                for symbol in symbols:
+            for symbol in symbols:
+
+                # فقط اگر بازار تومانی
+                # در تبدیل وجود دارد ذخیره کن
+                market = find_irt_market(
+                    symbol
+                )
+
+                if market:
 
                     save_analysis(
                         chat_id,
                         message_id,
                         symbol,
-                        analyst,
                         message_date
                     )
 
-            else:
+            return "ok"
 
-                print(
-                    "UNKNOWN ANALYST:",
-                    user_id
+
+        # =================================================
+        # متن
+        # =================================================
+
+        text = message.get(
+            "text",
+            ""
+        ).strip()
+
+
+        if not text:
+
+            return "ok"
+
+
+        # =================================================
+        # START
+        # =================================================
+
+        if text.lower() == "/start":
+
+            send_message(
+                chat_id,
+
+                "🤖 ربات روی چارت\n\n"
+                "برای قیمت، نام یا نماد ارز را "
+                "بنویسید.\n\n"
+                "برای تحلیل:\n"
+                "تحلیل سولانا\n"
+                "تحلیل FET\n"
+                "تحلیل لیسک\n\n"
+                "برای همه تحلیل‌های امروز:\n"
+                "تحلیل های امروز"
+            )
+
+            return "ok"
+
+
+        # =================================================
+        # تحلیل‌های امروز
+        # =================================================
+
+        if is_today_request(
+            text
+        ):
+
+            results = (
+                get_today_latest_analyses(
+                    chat_id
+                )
+            )
+
+
+            if not results:
+
+                send_message(
+                    chat_id,
+                    "📊 امروز هنوز "
+                    "تحلیلی ثبت نشده است."
                 )
 
-            return "ok"
+                return "ok"
 
 
-    # =====================================================
-    # پیام بدون متن
-    # =====================================================
-
-    if not text:
-
-        return "ok"
+            reply = (
+                "📊 تحلیل‌های امروز "
+                "روی چارت\n\n"
+            )
 
 
-    # =====================================================
-    # /start
-    # =====================================================
-
-    if text.lower() == "/start":
-
-        send_message(
-            chat_id,
-
-            "🤖 ربات روی چارت\n\n"
-            "برای قیمت، نام یا نماد ارز را "
-            "بنویسید.\n\n"
-            "برای تحلیل:\n"
-            "تحلیل سولانا\n"
-            "تحلیل سولانا رضا\n"
-            "تحلیل ریپل چراغی\n"
-            "تحلیل بیت سلیمانی\n\n"
-            "برای همه تحلیل‌های امروز:\n"
-            "تحلیل های امروز"
-        )
-
-        return "ok"
+            # مرتب کردن از قدیمی به جدید
+            results = sorted(
+                results,
+                key=lambda x:
+                    x["message_date"]
+            )
 
 
-    # =====================================================
-    # درخواست تحلیل‌های امروز
-    # =====================================================
+            for result in results:
 
-    if is_today_request(text):
+                symbol = result[
+                    "symbol"
+                ]
 
-        results = get_today_analyses(
-            chat_id
-        )
+                name = DISPLAY_NAMES.get(
+                    symbol,
+                    symbol
+                )
 
-        if not results:
+                reply += (
+                    f"• {name} "
+                    f"#{symbol}\n"
+                )
+
 
             send_message(
                 chat_id,
-                "📊 امروز هنوز تحلیلی "
-                "ثبت نشده است."
+                reply
             )
 
             return "ok"
 
 
-        reply = "📊 تحلیل‌های امروز\n\n"
+        # =================================================
+        # درخواست تحلیل
+        # =================================================
 
-
-        for result in results:
-
-            symbol = result["symbol"]
-            analyst = result["analyst"]
-
-            name = DISPLAY_NAMES.get(
-                symbol,
-                symbol
-            )
-
-            analyst_name = ANALYST_NAMES.get(
-                analyst,
-                analyst
-            )
-
-            time_text = datetime.fromtimestamp(
-                result["message_date"],
-                tz=ZoneInfo("Asia/Tehran")
-            ).strftime("%H:%M")
-
-
-            reply += (
-                f"• {time_text} — "
-                f"{analyst_name} — "
-                f"{name}\n"
-            )
-
-
-        send_message(
-            chat_id,
-            reply
-        )
-
-        return "ok"
-
-
-    # =====================================================
-    # درخواست تحلیل یک ارز
-    # =====================================================
-
-    if is_analysis_request(text):
-
-        symbol = find_requested_symbol(
+        if is_analysis_request(
             text
-        )
+        ):
 
-        if not symbol:
-
-            send_message(
-                chat_id,
-                "❌ نتوانستم ارز موردنظر "
-                "را تشخیص بدهم."
+            symbol = (
+                find_symbol_from_text(
+                    text
+                )
             )
 
-            return "ok"
+
+            if not symbol:
+
+                send_message(
+                    chat_id,
+                    "❌ ارز موردنظر "
+                    "تشخیص داده نشد."
+                )
+
+                return "ok"
 
 
-        analyst = find_analyst(
-            text
-        )
-
-
-        # -------------------------------------------------
-        # اگر تحلیلگر مشخص شده باشد
-        # -------------------------------------------------
-
-        if analyst:
-
-            result = get_latest_analysis(
-                chat_id,
-                symbol,
-                analyst
+            result = (
+                get_latest_analysis(
+                    chat_id,
+                    symbol
+                )
             )
+
 
             if not result:
 
                 send_message(
                     chat_id,
-                    "❌ هنوز تحلیلی از "
-                    f"{ANALYST_NAMES[analyst]} "
-                    f"درباره "
+
+                    "❌ هنوز تحلیلی برای "
                     f"{DISPLAY_NAMES.get(symbol, symbol)} "
                     "ثبت نشده است."
                 )
@@ -1130,104 +1189,49 @@ def webhook():
                 symbol
             )
 
-            analyst_name = ANALYST_NAMES.get(
-                analyst,
-                analyst
-            )
-
 
             send_message(
                 chat_id,
 
                 f"📊 آخرین تحلیل "
-                f"{analyst_name} "
-                f"درباره {name}",
+                f"{name}",
 
-                reply_to_message_id=
-                    result["message_id"]
+                reply_to=result[
+                    "message_id"
+                ]
             )
 
             return "ok"
 
 
-        # -------------------------------------------------
-        # اگر تحلیلگر مشخص نشده:
-        # آخرین تحلیل هر سه نفر
-        # -------------------------------------------------
+        # =================================================
+        # فیلتر گروه
+        # =================================================
 
-        results = get_latest_all_analysts(
-            chat_id,
-            symbol
-        )
+        if chat_type in [
+            "group",
+            "supergroup"
+        ]:
 
-        if not results:
+            if not looks_like_coin(
+                text
+            ):
 
-            send_message(
-                chat_id,
-                "❌ هنوز تحلیلی برای "
-                f"{DISPLAY_NAMES.get(symbol, symbol)} "
-                "ثبت نشده است."
+                return "ok"
+
+
+        # =================================================
+        # قیمت
+        # =================================================
+
+        asset = (
+            find_symbol_from_text(
+                text
             )
-
-            return "ok"
-
-
-        name = DISPLAY_NAMES.get(
-            symbol,
-            symbol
-        )
-
-
-        # هر تحلیلگر را جداگانه Reply می‌کنیم
-        send_message(
-            chat_id,
-            f"📊 آخرین تحلیل‌های {name}"
         )
 
 
-        for result in results:
-
-            analyst_name = ANALYST_NAMES.get(
-                result["analyst"],
-                result["analyst"]
-            )
-
-            send_message(
-                chat_id,
-
-                f"👤 {analyst_name}\n"
-                f"آخرین تحلیل {name}",
-
-                reply_to_message_id=
-                    result["message_id"]
-            )
-
-        return "ok"
-
-
-    # =====================================================
-    # فیلتر پیام‌های گروه
-    # =====================================================
-
-    if chat_type in [
-        "group",
-        "supergroup"
-    ]:
-
-        if not looks_like_coin(text):
-
-            return "ok"
-
-
-    # =====================================================
-    # قیمت
-    # =====================================================
-
-    try:
-
-        symbol = find_symbol(text)
-
-        if not symbol:
+        if not asset:
 
             if chat_type in [
                 "group",
@@ -1238,6 +1242,33 @@ def webhook():
 
             send_message(
                 chat_id,
+                "❌ ارز شناخته نشد."
+            )
+
+            return "ok"
+
+
+        # =================================================
+        # بازار تومانی
+        # =================================================
+
+        market = find_irt_market(
+            asset
+        )
+
+
+        if not market:
+
+            if chat_type in [
+                "group",
+                "supergroup"
+            ]:
+
+                return "ok"
+
+            send_message(
+                chat_id,
+
                 "❌ این ارز در بازار "
                 "تومانی تبدیل پیدا نشد."
             )
@@ -1245,23 +1276,42 @@ def webhook():
             return "ok"
 
 
+        # =================================================
         # قیمت تومان
-        toman_price = get_price(
-            symbol,
-            "IRT"
-        )
+        # =================================================
+
+        toman_price = None
+
+        try:
+
+            toman_price = get_price(
+                market
+            )
+
+        except Exception as e:
+
+            print(
+                "TOMAN PRICE ERROR:",
+                e
+            )
 
 
+        # =================================================
         # قیمت تتر
+        # =================================================
+
         usdt_price = None
 
-        if symbol != "USDTIRT":
+        if asset != "USDT":
 
             try:
 
+                usdt_market = (
+                    asset + "USDT"
+                )
+
                 usdt_price = get_price(
-                    symbol,
-                    "USDT"
+                    usdt_market
                 )
 
             except Exception as e:
@@ -1287,19 +1337,22 @@ def webhook():
 
             send_message(
                 chat_id,
-                "❌ قیمت این ارز در حال حاضر "
-                "دریافت نشد."
+
+                "❌ قیمت این ارز در حال "
+                "حاضر دریافت نشد."
             )
 
             return "ok"
 
 
-        display_name = normalize_text(
+        name = DISPLAY_NAMES.get(
+            asset,
             text
         )
 
+
         reply = (
-            f"🪙 {display_name}\n\n"
+            f"🪙 {name}\n\n"
         )
 
 
@@ -1311,18 +1364,9 @@ def webhook():
             )
 
 
-        if display_name in [
-            "تتر",
-            "دلار"
-        ]:
+        if usdt_price is not None:
 
-            reply += (
-                "💵 تتر: 1 USDT"
-            )
-
-        elif usdt_price is not None:
-
-            usdt_display = (
+            usdt_text = (
                 f"{usdt_price:.8f}"
                 .rstrip("0")
                 .rstrip(".")
@@ -1330,7 +1374,7 @@ def webhook():
 
             reply += (
                 f"💵 تتر: "
-                f"{usdt_display} USDT"
+                f"{usdt_text} USDT"
             )
 
 
@@ -1343,23 +1387,9 @@ def webhook():
     except Exception as e:
 
         print(
-            "ERROR:",
-            e
+            "GENERAL ERROR:",
+            repr(e)
         )
-
-        if chat_type in [
-            "group",
-            "supergroup"
-        ]:
-
-            return "ok"
-
-        send_message(
-            chat_id,
-            "⚠️ خطا در دریافت قیمت. "
-            "لطفاً دوباره امتحان کنید."
-        )
-
 
     return "ok"
 
