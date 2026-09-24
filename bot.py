@@ -1,12 +1,16 @@
-
 from flask import Flask, request
 import requests
 import os
 import re
+import sqlite3
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 app = Flask(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+
+DB_FILE = "analyses.db"
 
 
 # =========================
@@ -54,6 +58,35 @@ ALIASES = {
 
 
 # =========================
+# ساخت دیتابیس
+# =========================
+
+def init_database():
+
+    connection = sqlite3.connect(DB_FILE)
+
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            symbol TEXT NOT NULL,
+            message_date INTEGER NOT NULL,
+            date_text TEXT NOT NULL
+        )
+    """)
+
+    connection.commit()
+
+    connection.close()
+
+
+init_database()
+
+
+# =========================
 # نرمال‌سازی متن
 # =========================
 
@@ -72,12 +105,105 @@ def normalize_text(text):
 
 
 # =========================
+# تشخیص هشتگ‌های تحلیل
+# =========================
+
+def extract_analysis_symbols(caption):
+
+    if not caption:
+        return []
+
+    hashtags = re.findall(
+        r"#([A-Za-z0-9_]+)",
+        caption
+    )
+
+    symbols = []
+
+    for hashtag in hashtags:
+
+        symbol = hashtag.upper()
+
+        # فقط نمادهای انگلیسی را فعلاً قبول می‌کنیم
+        if re.fullmatch(
+            r"[A-Z0-9]{2,15}",
+            symbol
+        ):
+
+            symbols.append(symbol)
+
+    return list(set(symbols))
+
+
+# =========================
+# ذخیره تحلیل
+# =========================
+
+def save_analysis(
+    chat_id,
+    message_id,
+    symbol,
+    message_date
+):
+
+    tehran_time = datetime.fromtimestamp(
+        message_date,
+        tz=ZoneInfo("Asia/Tehran")
+    )
+
+    date_text = tehran_time.strftime(
+        "%Y-%m-%d"
+    )
+
+    connection = sqlite3.connect(
+        DB_FILE
+    )
+
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO analyses
+        (
+            chat_id,
+            message_id,
+            symbol,
+            message_date,
+            date_text
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            chat_id,
+            message_id,
+            symbol,
+            message_date,
+            date_text
+        )
+    )
+
+    connection.commit()
+
+    connection.close()
+
+    print(
+        f"SAVED ANALYSIS: "
+        f"{symbol} | "
+        f"chat={chat_id} | "
+        f"message={message_id}"
+    )
+
+
+# =========================
 # دریافت لیست بازارها
 # =========================
 
 def get_markets():
 
-    url = "https://api1.tabdeal.org/r/api/v1/exchangeInfo"
+    url = (
+        "https://api1.tabdeal.org/"
+        "r/api/v1/exchangeInfo"
+    )
 
     response = requests.get(
         url,
@@ -91,11 +217,14 @@ def get_markets():
     if isinstance(data, list):
         return data
 
-    return data.get("symbols", [])
+    return data.get(
+        "symbols",
+        []
+    )
 
 
 # =========================
-# تشخیص اینکه پیام شبیه ارز است
+# تشخیص پیام شبیه ارز
 # =========================
 
 def looks_like_coin(text):
@@ -108,10 +237,16 @@ def looks_like_coin(text):
     if len(text.split()) > 3:
         return False
 
-    if re.fullmatch(r"[A-Za-z0-9]{2,15}", text):
+    if re.fullmatch(
+        r"[A-Za-z0-9]{2,15}",
+        text
+    ):
         return True
 
-    if re.fullmatch(r"[آ-ی‌]{2,20}", text):
+    if re.fullmatch(
+        r"[آ-ی‌]{2,20}",
+        text
+    ):
         return True
 
     return False
@@ -157,20 +292,31 @@ def find_symbol(user_text):
 # دریافت قیمت
 # =========================
 
-def get_price(symbol, quote="IRT"):
+def get_price(
+    symbol,
+    quote="IRT"
+):
 
     if quote == "USDT":
 
         if symbol.endswith("IRT"):
-            market_symbol = symbol[:-3] + "USDT"
+
+            market_symbol = (
+                symbol[:-3] + "USDT"
+            )
+
         else:
+
             market_symbol = symbol
 
     else:
 
         market_symbol = symbol
 
-    url = "https://api1.tabdeal.org/r/api/v1/depth"
+    url = (
+        "https://api1.tabdeal.org/"
+        "r/api/v1/depth"
+    )
 
     response = requests.get(
         url,
@@ -185,12 +331,17 @@ def get_price(symbol, quote="IRT"):
 
     data = response.json()
 
-    asks = data.get("asks", [])
+    asks = data.get(
+        "asks",
+        []
+    )
 
     if not asks:
         return None
 
-    price = float(asks[0][0])
+    price = float(
+        asks[0][0]
+    )
 
     return price
 
@@ -199,7 +350,10 @@ def get_price(symbol, quote="IRT"):
 # ارسال پیام تلگرام
 # =========================
 
-def send_message(chat_id, text):
+def send_message(
+    chat_id,
+    text
+):
 
     url = (
         f"https://api.telegram.org/"
@@ -230,12 +384,18 @@ def home():
 # Webhook
 # =========================
 
-@app.route("/webhook", methods=["POST"])
+@app.route(
+    "/webhook",
+    methods=["POST"]
+)
 def webhook():
 
     data = request.get_json()
 
-    if not data or "message" not in data:
+    if not data:
+        return "ok"
+
+    if "message" not in data:
         return "ok"
 
     message = data["message"]
@@ -246,6 +406,52 @@ def webhook():
         "type",
         "private"
     )
+
+    message_id = message.get(
+        "message_id"
+    )
+
+    message_date = message.get(
+        "date"
+    )
+
+
+    # ==================================================
+    # مرحله اول سیستم تحلیل:
+    # فقط عکس‌هایی که کپشن دارای #SYMBOL دارند
+    # ==================================================
+
+    if "photo" in message:
+
+        caption = message.get(
+            "caption",
+            ""
+        )
+
+        analysis_symbols = (
+            extract_analysis_symbols(
+                caption
+            )
+        )
+
+        if analysis_symbols:
+
+            for symbol in analysis_symbols:
+
+                save_analysis(
+                    chat_id,
+                    message_id,
+                    symbol,
+                    message_date
+                )
+
+            # فعلاً هیچ پاسخی به گروه نمی‌دهیم
+            return "ok"
+
+
+    # =========================
+    # پیام متنی
+    # =========================
 
     text = message.get(
         "text",
@@ -288,6 +494,7 @@ def webhook():
     ]:
 
         if not looks_like_coin(text):
+
             return "ok"
 
 
@@ -305,11 +512,13 @@ def webhook():
                 "group",
                 "supergroup"
             ]:
+
                 return "ok"
 
             send_message(
                 chat_id,
-                "❌ این ارز در بازار تومانی تبدیل پیدا نشد."
+                "❌ این ارز در بازار تومانی "
+                "تبدیل پیدا نشد."
             )
 
             return "ok"
@@ -354,11 +563,13 @@ def webhook():
                 "group",
                 "supergroup"
             ]:
+
                 return "ok"
 
             send_message(
                 chat_id,
-                "❌ قیمت این ارز در حال حاضر دریافت نشد."
+                "❌ قیمت این ارز در حال حاضر "
+                "دریافت نشد."
             )
 
             return "ok"
@@ -368,12 +579,14 @@ def webhook():
         # ساخت پاسخ
         # =========================
 
-        display_name = normalize_text(text)
+        display_name = normalize_text(
+            text
+        )
 
-        reply = f"🪙 {display_name}\n\n"
+        reply = (
+            f"🪙 {display_name}\n\n"
+        )
 
-
-        # قیمت تومان
 
         if toman_price is not None:
 
@@ -383,18 +596,17 @@ def webhook():
             )
 
 
-        # قیمت تتر
-
         if display_name in [
             "تتر",
             "دلار"
         ]:
 
-            reply += "💵 تتر: 1 USDT"
+            reply += (
+                "💵 تتر: 1 USDT"
+            )
 
         elif usdt_price is not None:
 
-            # حذف صفرهای اضافی
             usdt_display = (
                 f"{usdt_price:.8f}"
                 .rstrip("0")
@@ -424,11 +636,13 @@ def webhook():
             "group",
             "supergroup"
         ]:
+
             return "ok"
 
         send_message(
             chat_id,
-            "⚠️ خطا در دریافت قیمت. لطفاً دوباره امتحان کنید."
+            "⚠️ خطا در دریافت قیمت. "
+            "لطفاً دوباره امتحان کنید."
         )
 
 
