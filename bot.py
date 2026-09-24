@@ -2,6 +2,7 @@
 from flask import Flask, request
 import requests
 import os
+import re
 
 app = Flask(__name__)
 
@@ -15,19 +16,73 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ALIASES = {
     "تتر": "USDT",
     "دلار": "USDT",
+
     "بیت کوین": "BTC",
     "بیتکوین": "BTC",
+    "بیت‌کوین": "BTC",
+
     "اتریوم": "ETH",
+
     "سولانا": "SOL",
+
     "ترون": "TRX",
+
     "دوج": "DOGE",
     "دوج کوین": "DOGE",
+    "دوج‌کوین": "DOGE",
+
     "ریپل": "XRP",
+
     "بی ان بی": "BNB",
+    "بی‌ان‌بی": "BNB",
+
     "تون": "TON",
+
     "کاردانو": "ADA",
+
     "شیبا": "SHIB",
+
+    "پپه": "PEPE",
+
+    "آپتوس": "APT",
+
+    "نات": "NOT",
+
+    "ترون": "TRX",
+
+    "چین لینک": "LINK",
+    "چین‌لینک": "LINK",
+
+    "پولکادات": "DOT",
+
+    "آوالانچ": "AVAX",
+
+    "لایت کوین": "LTC",
+    "لایت‌کوین": "LTC",
 }
+
+
+# =========================
+# نرمال‌سازی متن
+# =========================
+
+def normalize_text(text):
+
+    text = text.strip()
+
+    # حروف عربی به فارسی
+    text = text.replace("ي", "ی")
+    text = text.replace("ى", "ی")
+    text = text.replace("ك", "ک")
+
+    # حذف @ و $
+    text = text.replace("@", "")
+    text = text.replace("$", "")
+
+    # حذف فاصله‌های ابتدا و انتها
+    text = text.strip()
+
+    return text
 
 
 # =========================
@@ -54,17 +109,52 @@ def get_markets():
 
 
 # =========================
-# پیدا کردن بازار تومانی ارز
+# تشخیص اینکه پیام احتمالاً ارز است
+# =========================
+
+def looks_like_coin(text):
+
+    text = normalize_text(text)
+
+    # نام فارسی که در لیست ماست
+    if text in ALIASES:
+        return True
+
+    # اگر شامل فاصله زیاد باشد، احتمالاً جمله معمولی است
+    if len(text.split()) > 3:
+        return False
+
+    # نماد انگلیسی ارز
+    # BTC
+    # PEPE
+    # BTCUSDT
+    if re.fullmatch(r"[A-Za-z0-9]{2,15}", text):
+        return True
+
+    # متن‌های کوتاه فارسی
+    # برای نام‌هایی مثل پپه، تتر، شیبا
+    if re.fullmatch(r"[آ-ی‌]{2,20}", text):
+        return True
+
+    return False
+
+
+# =========================
+# پیدا کردن بازار تومانی
 # =========================
 
 def find_symbol(user_text):
 
-    text = user_text.strip().upper()
+    text = normalize_text(user_text)
 
-    if user_text.strip() in ALIASES:
-        asset = ALIASES[user_text.strip()]
+    upper_text = text.upper()
+
+    # اگر نام فارسی بود
+    if text in ALIASES:
+        asset = ALIASES[text]
+
     else:
-        asset = text
+        asset = upper_text
 
     markets = get_markets()
 
@@ -76,7 +166,12 @@ def find_symbol(user_text):
         if market.get("quoteAsset") != "IRT":
             continue
 
-        if market.get("baseAsset", "").upper() == asset:
+        base_asset = market.get(
+            "baseAsset",
+            ""
+        ).upper()
+
+        if base_asset == asset:
 
             return market.get("symbol")
 
@@ -85,25 +180,26 @@ def find_symbol(user_text):
 
 # =========================
 # دریافت قیمت
-# quote = IRT یا USDT
 # =========================
 
 def get_price(symbol, quote="IRT"):
 
-    # مثال:
-    # BTCIRT  -> BTCIRT
-    # BTCIRT  -> BTCUSDT
-
     if quote == "USDT":
 
         if symbol.endswith("IRT"):
-            market_symbol = symbol[:-3] + "USDT"
+
+            market_symbol = (
+                symbol[:-3] + "USDT"
+            )
+
         else:
+
             market_symbol = symbol
 
     else:
 
         market_symbol = symbol
+
 
     url = "https://api1.tabdeal.org/r/api/v1/depth"
 
@@ -131,12 +227,15 @@ def get_price(symbol, quote="IRT"):
 
 
 # =========================
-# ارسال پیام به تلگرام
+# ارسال پیام تلگرام
 # =========================
 
 def send_message(chat_id, text):
 
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{BOT_TOKEN}/sendMessage"
+    )
 
     requests.post(
         url,
@@ -159,7 +258,7 @@ def home():
 
 
 # =========================
-# Webhook تلگرام
+# Webhook
 # =========================
 
 @app.route("/webhook", methods=["POST"])
@@ -174,7 +273,19 @@ def webhook():
 
     chat_id = message["chat"]["id"]
 
-    text = message.get("text", "").strip()
+    chat_type = message["chat"].get(
+        "type",
+        "private"
+    )
+
+    text = message.get(
+        "text",
+        ""
+    ).strip()
+
+
+    if not text:
+        return "ok"
 
 
     # =========================
@@ -187,11 +298,8 @@ def webhook():
             chat_id,
 
             "🤖 ربات قیمت روی چارت\n\n"
-
-            "نام یا نماد هر ارز را بنویسید.\n\n"
-
+            "نام یا نماد ارز را بنویسید.\n\n"
             "مثال:\n"
-
             "تتر\n"
             "بیت کوین\n"
             "BTC\n"
@@ -203,37 +311,71 @@ def webhook():
 
 
     # =========================
+    # در گروه فقط پیام‌هایی
+    # که شبیه نام ارز هستند
+    # پردازش شوند
+    # =========================
+
+    if chat_type in [
+        "group",
+        "supergroup"
+    ]:
+
+        if not looks_like_coin(text):
+
+            # پیام معمولی گروه → هیچ پاسخی نده
+            return "ok"
+
+
+    # =========================
     # دریافت قیمت
     # =========================
 
     try:
 
-        # پیدا کردن بازار تومانی
         symbol = find_symbol(text)
 
 
+        # اگر در گروه بود و ارز پیدا نشد:
+        # هیچ پاسخی نده
         if not symbol:
 
+            if chat_type in [
+                "group",
+                "supergroup"
+            ]:
+
+                return "ok"
+
+            # در چت خصوصی اطلاع بده
             send_message(
                 chat_id,
 
-                "❌ این ارز در بازار تومانی تبدیل پیدا نشد."
+                "❌ این ارز در بازار تومانی "
+                "تبدیل پیدا نشد."
             )
 
             return "ok"
 
 
+        # =========================
         # قیمت تومانی
+        # =========================
+
         toman_price = get_price(
             symbol,
             "IRT"
         )
 
 
+        # =========================
         # قیمت تتری
+        # =========================
+
         usdt_price = None
 
-        # برای خود تتر بازار USDT/USDT وجود ندارد
+
+        # برای خود تتر بازار USDT/USDT نداریم
         if symbol != "USDTIRT":
 
             try:
@@ -253,13 +395,28 @@ def webhook():
                 usdt_price = None
 
 
-        # اگر هیچ قیمتی پیدا نشد
-        if toman_price is None and usdt_price is None:
+        # =========================
+        # هیچ قیمتی پیدا نشد
+        # =========================
+
+        if (
+            toman_price is None
+            and
+            usdt_price is None
+        ):
+
+            if chat_type in [
+                "group",
+                "supergroup"
+            ]:
+
+                return "ok"
 
             send_message(
                 chat_id,
 
-                "❌ قیمت این ارز در حال حاضر دریافت نشد."
+                "❌ قیمت این ارز در حال حاضر "
+                "دریافت نشد."
             )
 
             return "ok"
@@ -269,8 +426,14 @@ def webhook():
         # ساخت پاسخ
         # =========================
 
-        reply = f"🪙 {text}\n\n"
+        display_name = normalize_text(text)
 
+        reply = (
+            f"🪙 {display_name}\n\n"
+        )
+
+
+        # قیمت تومان
 
         if toman_price is not None:
 
@@ -280,11 +443,15 @@ def webhook():
             )
 
 
-        if text.strip() in ["تتر", "دلار"]:
+        # قیمت تتر
+
+        if display_name in [
+            "تتر",
+            "دلار"
+        ]:
 
             reply += (
-                f"💵 تتر: "
-                f"1 USDT"
+                "💵 تتر: 1 USDT"
             )
 
         elif usdt_price is not None:
@@ -295,7 +462,10 @@ def webhook():
             )
 
 
+        # =========================
         # ارسال پاسخ
+        # =========================
+
         send_message(
             chat_id,
             reply
@@ -308,6 +478,14 @@ def webhook():
             "ERROR:",
             e
         )
+
+        # خطاهای فنی را در گروه به کاربران نشان نده
+        if chat_type in [
+            "group",
+            "supergroup"
+        ]:
+
+            return "ok"
 
         send_message(
             chat_id,
