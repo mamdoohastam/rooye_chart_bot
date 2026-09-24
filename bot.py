@@ -3,6 +3,7 @@ import requests
 import os
 import re
 import sqlite3
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -11,9 +12,6 @@ app = Flask(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 DB_FILE = "analyses.db"
-
-CHANNEL_URL = "https://t.me/rooye_chart"
-GROUP_URL = "https://t.me/rooye_chart_gap"
 
 
 # =========================
@@ -317,46 +315,31 @@ def extract_analysis_request(text):
     for pattern in today_patterns:
 
         if normalized == pattern:
+
             return "TODAY"
 
 
-    # -----------------------------------------------------
-    # مهم:
-    # درخواست تحلیل باید با خود کلمه «تحلیل» شروع شود.
-    #
-    # بنابراین:
-    # «آقا رضا تحلیل سولانا برای دوستمون بذار»
-    # دیگر درخواست تحلیل محسوب نمی‌شود.
-    # -----------------------------------------------------
+    # باید کلمه تحلیل وجود داشته باشد
+    if "تحلیل" not in normalized:
 
-    if not normalized.startswith("تحلیل"):
         return None
 
 
-    # حذف فقط «تحلیل» از ابتدای پیام
-    remaining = normalized[
-        len("تحلیل"):
-    ].strip()
+    # حذف عبارت تحلیل
+    remaining = normalized.replace(
+        "تحلیل",
+        ""
+    ).strip()
 
-
-    # عبارت‌های ساده مثل:
-    # تحلیل سولانا
-    # تحلیل XRP
-    # تحلیل آخرین سولانا
-    # تحلیل های سولانا
-    # را قبول می‌کنیم.
     remaining = remaining.replace(
         "های",
-        "",
-        1
+        ""
     ).strip()
 
     remaining = remaining.replace(
         "آخرین",
-        "",
-        1
+        ""
     ).strip()
-
 
     if not remaining:
         return None
@@ -364,6 +347,7 @@ def extract_analysis_request(text):
 
     # نام فارسی
     if remaining in ALIASES:
+
         return ALIASES[remaining]
 
 
@@ -374,6 +358,7 @@ def extract_analysis_request(text):
         r"[A-Z0-9]{2,15}",
         upper
     ):
+
         return upper
 
 
@@ -439,6 +424,195 @@ def looks_like_coin(text):
 
 
 # =========================
+# نام فارسی ارزها از خود سایت تبدیل
+# =========================
+
+def normalize_coin_name(text):
+
+    text = normalize_text(text)
+
+    text = text.replace(
+        "\u200c",
+        " "
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
+
+    return text.strip().lower()
+
+
+def load_tabdeal_persian_names():
+
+    global TABDEAL_NAME_CACHE
+    global TABDEAL_CACHE_TIME
+
+    now = time.time()
+
+    if (
+        TABDEAL_NAME_CACHE
+        and
+        now - TABDEAL_CACHE_TIME
+        < TABDEAL_CACHE_TTL
+    ):
+        return TABDEAL_NAME_CACHE
+
+
+    mapping = {}
+
+    # صفحه فهرست عمومی تبدیل، همان صفحه‌ای که در سایت
+    # «نماد + نام فارسی» را نمایش می‌دهد.
+    base_url = (
+        "https://tabdeal.org/"
+        "buy-cryptocurrency"
+    )
+
+
+    for page in range(
+        1,
+        TABDEAL_MAX_PAGES + 1
+    ):
+
+        try:
+
+            params = {}
+
+            if page > 1:
+                params["page"] = page
+
+            response = requests.get(
+                base_url,
+                params=params,
+                timeout=8
+            )
+
+            if not response.ok:
+                continue
+
+            html = response.text
+
+
+            # -------------------------------------------------
+            # الگوی اصلی فهرست تبدیل:
+            #
+            # SYMBOL
+            # نام فارسی
+            # قیمت
+            # USDT / تومان
+            #
+            # چون HTML سایت ممکن است در آینده کمی تغییر کند،
+            # چند الگوی محدود را امتحان می‌کنیم.
+            # -------------------------------------------------
+
+            patterns = [
+
+                re.compile(
+                    r'\b([A-Z][A-Z0-9]{1,14})\b'
+                    r'\s+'
+                    r'([\u0600-\u06FF][\u0600-\u06FF\s\u200c‌\-]{1,70}?)'
+                    r'\s+'
+                    r'(?=[0-9۰-۹.,]+)'
+                ),
+
+                re.compile(
+                    r'"symbol"\s*:\s*"([A-Z0-9]{2,15})"'
+                    r'.{0,1000}?'
+                    r'"name"\s*:\s*"([^"]+)"',
+                    re.DOTALL
+                )
+            ]
+
+
+            for pattern in patterns:
+
+                for match in pattern.finditer(
+                    html
+                ):
+
+                    symbol = (
+                        match.group(1)
+                        .upper()
+                        .strip()
+                    )
+
+                    persian_name = (
+                        match.group(2)
+                        .strip()
+                    )
+
+
+                    if not re.fullmatch(
+                        r"[A-Z0-9]{2,15}",
+                        symbol
+                    ):
+                        continue
+
+
+                    # فقط نام‌هایی که واقعاً حروف فارسی دارند.
+                    if not re.search(
+                        r"[\u0600-\u06FF]",
+                        persian_name
+                    ):
+                        continue
+
+
+                    key = normalize_coin_name(
+                        persian_name
+                    )
+
+                    if key:
+                        mapping[key] = symbol
+
+
+        except Exception as e:
+
+            print(
+                "TABDEAL NAME PAGE ERROR:",
+                page,
+                repr(e)
+            )
+
+
+    # Aliasهای فعلی ربات اولویت دارند؛
+    # در نتیجه هیچ رفتار قبلی از بین نمی‌رود.
+    for name, symbol in ALIASES.items():
+
+        mapping[
+            normalize_coin_name(name)
+        ] = symbol
+
+
+    TABDEAL_NAME_CACHE = mapping
+    TABDEAL_CACHE_TIME = now
+
+    print(
+        "TABDEAL PERSIAN NAMES LOADED:",
+        len(mapping)
+    )
+
+    return mapping
+
+
+def find_symbol_from_tabdeal_name(
+    user_text
+):
+
+    key = normalize_coin_name(
+        user_text
+    )
+
+    if not key:
+        return None
+
+    mapping = load_tabdeal_persian_names()
+
+    return mapping.get(key)
+
+
+# =========================
 # پیدا کردن بازار تومانی
 # =========================
 
@@ -449,9 +623,29 @@ def find_symbol(user_text):
     upper_text = text.upper()
 
     if text in ALIASES:
+
         asset = ALIASES[text]
+
     else:
+
         asset = upper_text
+
+        # اگر ورودی فارسی بود و Alias دستی نداشت،
+        # نام فارسی را از فهرست خود سایت تبدیل پیدا کن.
+        if re.search(
+            r"[؀-ۿ]",
+            text
+        ):
+
+            tabdeal_asset = (
+                find_symbol_from_tabdeal_name(
+                    text
+                )
+            )
+
+            if tabdeal_asset:
+                asset = tabdeal_asset
+
 
     markets = get_markets()
 
@@ -547,31 +741,14 @@ def send_message(
 
     payload = {
         "chat_id": chat_id,
-        "text": text,
-        "reply_markup": {
-            "inline_keyboard": [
-                [
-                    {
-                        "text": "📢 کانال روی چارت",
-                        "url": CHANNEL_URL
-                    },
-                    {
-                        "text": "💬 گروه روی چارت",
-                        "url": GROUP_URL
-                    }
-                ]
-            ]
-        }
+        "text": text
     }
-
 
     if reply_to_message_id is not None:
 
         payload["reply_parameters"] = {
-            "message_id":
-                reply_to_message_id
+            "message_id": reply_to_message_id
         }
-
 
     requests.post(
         url,
@@ -694,50 +871,25 @@ def webhook():
             return "ok"
 
 
-        # -------------------------------------------------
-        # هر پیام تحلیل فقط یک بار نمایش داده شود.
-        # اگر یک پیام چند هشتگ داشته باشد، همه نمادها
-        # کنار همان تحلیل ثبت می‌شوند.
-        # -------------------------------------------------
-
-        grouped = {}
+        # حذف تکراری‌ها و نگه داشتن آخرین تحلیل هر ارز
+        latest = {}
 
         for symbol, msg_id in results:
 
-            if msg_id not in grouped:
-                grouped[msg_id] = []
-
-            if symbol not in grouped[msg_id]:
-                grouped[msg_id].append(symbol)
+            latest[symbol] = msg_id
 
 
-        reply = (
-            "📊 تمام تحلیل‌های امروز "
-            "روی چارت\n\n"
-        )
+        reply = "📊 تحلیل‌های امروز روی چارت\n\n"
 
+        for symbol, msg_id in latest.items():
 
-        for index, (msg_id, symbols) in enumerate(
-            grouped.items(),
-            start=1
-        ):
-
-            names = []
-
-            for symbol in symbols:
-
-                name = DISPLAY_NAMES.get(
-                    symbol,
-                    symbol
-                )
-
-                names.append(
-                    f"{name} #{symbol}"
-                )
+            name = DISPLAY_NAMES.get(
+                symbol,
+                symbol
+            )
 
             reply += (
-                f"{index}. "
-                f"{' | '.join(names)}\n"
+                f"• {name}  #{symbol}\n"
             )
 
 
@@ -745,35 +897,6 @@ def webhook():
             chat_id,
             reply
         )
-
-
-        # -------------------------------------------------
-        # حالا خود تمام پیام‌های تحلیل امروز را به صورت
-        # ریپلای نمایش بده.
-        # -------------------------------------------------
-
-        for msg_id in grouped:
-
-            symbols = grouped[msg_id]
-
-            names = []
-
-            for symbol in symbols:
-
-                name = DISPLAY_NAMES.get(
-                    symbol,
-                    symbol
-                )
-
-                names.append(name)
-
-
-            send_message(
-                chat_id,
-                f"📊 تحلیل {' | '.join(names)}:",
-                reply_to_message_id=msg_id
-            )
-
 
         return "ok"
 
