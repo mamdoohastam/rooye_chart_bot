@@ -450,16 +450,13 @@ def webhook():
             "دلار"
         ]:
 
-            reply += (
-                "💵 تتر: 1 USDT"
-            )
+            
+            )usdt_display = f"{usdt_price:.8f}".rstrip("0").rstrip(".")
 
-        elif usdt_price is not None:
-
-            reply += (
-                f"💵 تتر: "
-                f"{usdt_price:,.8f} USDT"
-            )
+reply += (
+    f"💵 تتر: "
+    f"{usdt_display} USDT"
+)
 
 
         # =========================
