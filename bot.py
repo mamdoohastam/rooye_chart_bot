@@ -7,40 +7,44 @@ app = Flask(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 COINS = {
-    "تتر": "usdt",
-    "usdt": "usdt",
-    "بیت کوین": "btc",
-    "بیتکوین": "btc",
-    "btc": "btc",
-    "اتریوم": "eth",
-    "eth": "eth",
-    "سولانا": "sol",
-    "sol": "sol",
-    "ترون": "trx",
-    "trx": "trx",
-    "دوج": "doge",
-    "دوج کوین": "doge",
-    "doge": "doge",
-    "ریپل": "xrp",
-    "xrp": "xrp",
-    "bnb": "bnb",
-    "بی ان بی": "bnb",
-    "تون": "ton",
-    "ton": "ton",
-    "کاردانو": "ada",
-    "ada": "ada",
-    "شیبا": "shib",
-    "شیبا اینو": "shib",
-    "shib": "shib",
+    "تتر": "USDTIRT",
+    "usdt": "USDTIRT",
+    "بیت کوین": "BTCIRT",
+    "بیتکوین": "BTCIRT",
+    "btc": "BTCIRT",
+    "اتریوم": "ETHIRT",
+    "eth": "ETHIRT",
+    "سولانا": "SOLIRT",
+    "sol": "SOLIRT",
+    "ترون": "TRXIRT",
+    "trx": "TRXIRT",
+    "دوج": "DOGEIRT",
+    "دوج کوین": "DOGEIRT",
+    "doge": "DOGEIRT",
+    "ریپل": "XRPIRT",
+    "xrp": "XRPIRT",
+    "بی ان بی": "BNBIRT",
+    "bnb": "BNBIRT",
+    "تون": "TONIRT",
+    "ton": "TONIRT",
+    "کاردانو": "ADAIRT",
+    "ada": "ADAIRT",
+    "شیبا": "SHIBIRT",
+    "شیبا اینو": "SHIBIRT",
+    "shib": "SHIBIRT",
 }
 
+
 def get_price(symbol):
-    url = "https://apiv2.nobitex.ir/v3/orderbook/" + symbol + "IRT"
+    url = "https://api.tabdeal.org/r/api/v1/depth"
 
-    response = requests.get(url, timeout=10)
+    response = requests.get(
+        url,
+        params={"symbol": symbol},
+        timeout=10
+    )
 
-    print("NOBITEX STATUS:", response.status_code)
-    print("NOBITEX RESPONSE:", response.text)
+    response.raise_for_status()
 
     data = response.json()
 
@@ -49,7 +53,10 @@ def get_price(symbol):
     if not asks:
         return None
 
+    # ارزان‌ترین سفارش فروش
     price_rial = float(asks[0][0])
+
+    # ریال → تومان
     return round(price_rial / 10)
 
 
@@ -88,7 +95,7 @@ def webhook():
         send_message(
             chat_id,
             "🤖 ربات قیمت روی چارت\n\n"
-            "برای دریافت قیمت، نام ارز را بنویسید.\n\n"
+            "نام ارز را بنویسید.\n\n"
             "مثال:\n"
             "تتر\n"
             "بیت کوین\n"
@@ -116,10 +123,12 @@ def webhook():
                     "❌ قیمت این ارز در حال حاضر دریافت نشد."
                 )
 
-        except Exception:
+        except Exception as e:
+            print("PRICE ERROR:", e)
+
             send_message(
                 chat_id,
-                "⚠️ خطا در دریافت قیمت. لطفاً چند لحظه بعد دوباره امتحان کنید."
+                "⚠️ خطا در دریافت قیمت. لطفاً دوباره امتحان کنید."
             )
 
     return "ok"
