@@ -166,7 +166,7 @@ def webhook():
     return "OK"
 
 
-if name == "main":
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
 
     app.run(
