@@ -1,44 +1,51 @@
-import os
-import requests
 from flask import Flask, request
+import requests
+import os
 
-app = Flask(__name__)
+app = Flask(name)
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-
-NOBITEX_URL = "https://api.nobitex.ir/market/stats"
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 COINS = {
-    "btc": "بیت‌کوین",
-    "eth": "اتریوم",
-    "sol": "سولانا",
-    "trx": "ترون",
-    "doge": "دوج‌کوین",
-    "xrp": "ریپل",
-    "bnb": "BNB",
-    "ton": "TON",
-    "ada": "کاردانو",
-    "shib": "شیبا",
-    "usdt": "تتر"
+    "تتر": "usdt",
+    "usdt": "usdt",
+    "بیت کوین": "btc",
+    "بیتکوین": "btc",
+    "btc": "btc",
+    "اتریوم": "eth",
+    "eth": "eth",
+    "سولانا": "sol",
+    "sol": "sol",
+    "ترون": "trx",
+    "trx": "trx",
+    "دوج": "doge",
+    "دوج کوین": "doge",
+    "doge": "doge",
+    "ریپل": "xrp",
+    "xrp": "xrp",
+    "bnb": "bnb",
+    "بی ان بی": "bnb",
+    "تون": "ton",
+    "ton": "ton",
+    "کاردانو": "ada",
+    "ada": "ada",
+    "شیبا": "shib",
+    "شیبا اینو": "shib",
+    "shib": "shib",
 }
 
-
 def get_price(symbol):
-    response = requests.get(
-        NOBITEX_URL,
-        params={
-            "srcCurrency": symbol,
-            "dstCurrency": "rls"
-        },
-        timeout=10
-    )
+    url = "https://api.nobitex.ir/market/stats"
 
+    params = {
+        "srcCurrency": symbol,
+        "dstCurrency": "rls"
+    }
+
+    response = requests.get(url, params=params, timeout=10)
     data = response.json()
 
-    if data.get("status") != "ok":
-        return None
-
-    market = data["stats"].get(f"{symbol}-rls")
+    market = data.get("stats", {}).get(f"{symbol}-rls")
 
     if not market:
         return None
@@ -46,13 +53,7 @@ def get_price(symbol):
     price_rial = float(market["latest"])
     price_toman = price_rial / 10
 
-    change = float(market.get("dayChange", 0))
-
-    return price_toman, change
-
-
-def format_number(number):
-    return f"{number:,.0f}"
+    return round(price_toman)
 
 
 def send_message(chat_id, text):
@@ -68,108 +69,67 @@ def send_message(chat_id, text):
     )
 
 
-@app.route("/", methods=["GET"])
+@app.route("/")
 def home():
-    return "Rooye Chart Bot is running."
+    return "Rooye Chart Bot is running"
 
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json(silent=True)
+
+    data = request.get_json()
 
     if not data or "message" not in data:
-        return "OK"
+        return "ok"
 
     message = data["message"]
 
     chat_id = message["chat"]["id"]
-
     text = message.get("text", "").strip().lower()
-
-    if not text:
-        return "OK"
 
     if text == "/start":
         send_message(
             chat_id,
-            "📊 ربات قیمت «روی چارت»\n\n"
-            "قیمت تومانی ارزها را دریافت کنید.\n\n"
-            "/btc\n"
-            "/eth\n"
-            "/sol\n"
-            "/trx\n"
-            "/doge\n"
-            "/xrp\n"
-            "/bnb\n"
-            "/ton\n"
-            "/ada\n"
-            "/shib\n"
-            "/usdt\n\n"
-            "برای مشاهده همه قیمت‌ها:\n"
-            "/prices"
+            "🤖 ربات قیمت روی چارت\n\n"
+            "برای دریافت قیمت، نام ارز را بنویسید.\n\n"
+            "مثال:\n"
+            "تتر\n"
+            "بیت کوین\n"
+            "اتریوم\n"
+            "سولانا"
         )
+        return "ok"
 
-        return "OK"
+    if text in COINS:
 
-    if text == "/prices":
-        lines = ["📊 قیمت ارزها در نوبیتکس\n"]
+        symbol = COINS[text]
 
-        for symbol, name in COINS.items():
-            result = get_price(symbol)
+        try:
+            price = get_price(symbol)
 
-            if result:
-                price, change = result
-
-                emoji = "🟢" if change >= 0 else "🔴"
-
-                lines.append(
-                    f"{emoji} {name}\n"
-                    f"💰 {format_number(price)} تومان\n"
-                    f"📊 24h: {change:+.2f}%\n"
+            if price:
+                send_message(
+                    chat_id,
+                    f"💰 قیمت {text}\n\n"
+                    f"🇮🇷 {price:,} تومان"
                 )
-
-        send_message(chat_id, "\n".join(lines))
-
-        return "OK"
-
-    if text.startswith("/"):
-        symbol = text[1:].split("@")[0]
-
-        if symbol in COINS:
-            result = get_price(symbol)
-
-            if result:
-                price, change = result
-
-                name = COINS[symbol]
-
-                emoji = "🟢" if change >= 0 else "🔴"
-
-                reply = (
-                    f"💰 {name}\n\n"
-                    f"قیمت: {format_number(price)} تومان\n"
-                    f"{emoji} تغییر ۲۴ ساعته: {change:+.2f}%"
-                )
-
             else:
-                reply = "❌ قیمت این ارز در حال حاضر در دسترس نیست."
+                send_message(
+                    chat_id,
+                    "❌ قیمت این ارز در حال حاضر دریافت نشد."
+                )
 
-            send_message(chat_id, reply)
-
-        else:
+        except Exception:
             send_message(
                 chat_id,
-                "❌ ارز موردنظر پیدا نشد.\n"
-                "مثلاً /btc یا /usdt را امتحان کنید."
+                "⚠️ خطا در دریافت قیمت. لطفاً چند لحظه بعد دوباره امتحان کنید."
             )
 
-    return "OK"
+    return "ok"
 
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-
+if name == "main":
     app.run(
         host="0.0.0.0",
-        port=port
+        port=int(os.environ.get("PORT", 10000))
     )
