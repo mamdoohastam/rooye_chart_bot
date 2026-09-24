@@ -35,22 +35,17 @@ COINS = {
 }
 
 def get_price(symbol):
-    url = "https://api.nobitex.ir/market/stats"
+    url = "https://api.nobitex.ir/v3/orderbook/" + symbol + "IRT"
 
-    params = {
-        "srcCurrency": symbol,
-        "dstCurrency": "rls"
-    }
-
-    response = requests.get(url, params=params, timeout=10)
+    response = requests.get(url, timeout=10)
     data = response.json()
 
-    market = data.get("stats", {}).get(f"{symbol}-rls")
+    asks = data.get("asks", [])
 
-    if not market:
+    if not asks:
         return None
 
-    price_rial = float(market["latest"])
+    price_rial = float(asks[0][0])
     price_toman = price_rial / 10
 
     return round(price_toman)
