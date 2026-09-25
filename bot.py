@@ -575,7 +575,21 @@ def send_message(
 
     payload = {
         "chat_id": chat_id,
-        "text": text
+        "text": text,
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "📢 کانال روی چارت",
+                        "url": "https://t.me/rooye_chart"
+                    },
+                    {
+                        "text": "💬 گروه روی چارت",
+                        "url": "https://t.me/rooye_chart_gap"
+                    }
+                ]
+            ]
+        }
     }
 
     if reply_to_message_id is not None:
@@ -589,7 +603,6 @@ def send_message(
         json=payload,
         timeout=10
     )
-
 
 # =========================
 # صفحه اصلی
