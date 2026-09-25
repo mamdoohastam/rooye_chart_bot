@@ -3,7 +3,6 @@ import requests
 import os
 import re
 import sqlite3
-import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -424,228 +423,46 @@ def looks_like_coin(text):
 
 
 # =========================
-# نام فارسی ارزها از خود سایت تبدیل
-# =========================
-
-def normalize_coin_name(text):
-
-    text = normalize_text(text)
-
-    text = text.replace(
-        "\u200c",
-        " "
-    )
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    )
-
-    return text.strip().lower()
-
-
-def load_tabdeal_persian_names():
-
-    global TABDEAL_NAME_CACHE
-    global TABDEAL_CACHE_TIME
-
-    now = time.time()
-
-    if (
-        TABDEAL_NAME_CACHE
-        and
-        now - TABDEAL_CACHE_TIME
-        < TABDEAL_CACHE_TTL
-    ):
-        return TABDEAL_NAME_CACHE
-
-
-    mapping = {}
-
-    # صفحه فهرست عمومی تبدیل، همان صفحه‌ای که در سایت
-    # «نماد + نام فارسی» را نمایش می‌دهد.
-    base_url = (
-        "https://tabdeal.org/"
-        "buy-cryptocurrency"
-    )
-
-
-    for page in range(
-        1,
-        TABDEAL_MAX_PAGES + 1
-    ):
-
-        try:
-
-            params = {}
-
-            if page > 1:
-                params["page"] = page
-
-            response = requests.get(
-                base_url,
-                params=params,
-                timeout=8
-            )
-
-            if not response.ok:
-                continue
-
-            html = response.text
-
-
-            # -------------------------------------------------
-            # الگوی اصلی فهرست تبدیل:
-            #
-            # SYMBOL
-            # نام فارسی
-            # قیمت
-            # USDT / تومان
-            #
-            # چون HTML سایت ممکن است در آینده کمی تغییر کند،
-            # چند الگوی محدود را امتحان می‌کنیم.
-            # -------------------------------------------------
-
-            patterns = [
-
-                re.compile(
-                    r'\b([A-Z][A-Z0-9]{1,14})\b'
-                    r'\s+'
-                    r'([\u0600-\u06FF][\u0600-\u06FF\s\u200c‌\-]{1,70}?)'
-                    r'\s+'
-                    r'(?=[0-9۰-۹.,]+)'
-                ),
-
-                re.compile(
-                    r'"symbol"\s*:\s*"([A-Z0-9]{2,15})"'
-                    r'.{0,1000}?'
-                    r'"name"\s*:\s*"([^"]+)"',
-                    re.DOTALL
-                )
-            ]
-
-
-            for pattern in patterns:
-
-                for match in pattern.finditer(
-                    html
-                ):
-
-                    symbol = (
-                        match.group(1)
-                        .upper()
-                        .strip()
-                    )
-
-                    persian_name = (
-                        match.group(2)
-                        .strip()
-                    )
-
-
-                    if not re.fullmatch(
-                        r"[A-Z0-9]{2,15}",
-                        symbol
-                    ):
-                        continue
-
-
-                    # فقط نام‌هایی که واقعاً حروف فارسی دارند.
-                    if not re.search(
-                        r"[\u0600-\u06FF]",
-                        persian_name
-                    ):
-                        continue
-
-
-                    key = normalize_coin_name(
-                        persian_name
-                    )
-
-                    if key:
-                        mapping[key] = symbol
-
-
-        except Exception as e:
-
-            print(
-                "TABDEAL NAME PAGE ERROR:",
-                page,
-                repr(e)
-            )
-
-
-    # Aliasهای فعلی ربات اولویت دارند؛
-    # در نتیجه هیچ رفتار قبلی از بین نمی‌رود.
-    for name, symbol in ALIASES.items():
-
-        mapping[
-            normalize_coin_name(name)
-        ] = symbol
-
-
-    TABDEAL_NAME_CACHE = mapping
-    TABDEAL_CACHE_TIME = now
-
-    print(
-        "TABDEAL PERSIAN NAMES LOADED:",
-        len(mapping)
-    )
-
-    return mapping
-
-
-def find_symbol_from_tabdeal_name(
-    user_text
-):
-
-    key = normalize_coin_name(
-        user_text
-    )
-
-    if not key:
-        return None
-
-    mapping = load_tabdeal_persian_names()
-
-    return mapping.get(key)
-
-
-# =========================
 # پیدا کردن بازار تومانی
 # =========================
+
+# =========================
+# نام‌های فارسی تکمیلی
+# =========================
+# این بخش فقط برای دریافت قیمت است و به سیستم تحلیل‌ها مربوط نیست.
+
+EXTRA_ALIASES = {
+    "استارک نت": "STRK",
+    "استارک‌نت": "STRK",
+    "لیسک": "LSK",
+    "بایکو": "BICO",
+    "بایکونومی": "BICO",
+    "ولوت": "VELVET",
+    "هیما": "HEI",
+}
+
 
 def find_symbol(user_text):
 
     text = normalize_text(user_text)
 
-    upper_text = text.upper()
+    lookup_text = (
+        text
+        .replace("\u200c", " ")
+        .replace("  ", " ")
+        .strip()
+    )
 
-    if text in ALIASES:
+    upper_text = lookup_text.upper()
 
-        asset = ALIASES[text]
+    if lookup_text in ALIASES:
+        asset = ALIASES[lookup_text]
+
+    elif lookup_text in EXTRA_ALIASES:
+        asset = EXTRA_ALIASES[lookup_text]
 
     else:
-
         asset = upper_text
-
-        # اگر ورودی فارسی بود و Alias دستی نداشت،
-        # نام فارسی را از فهرست خود سایت تبدیل پیدا کن.
-        if re.search(
-            r"[؀-ۿ]",
-            text
-        ):
-
-            tabdeal_asset = (
-                find_symbol_from_tabdeal_name(
-                    text
-                )
-            )
-
-            if tabdeal_asset:
-                asset = tabdeal_asset
-
 
     markets = get_markets()
 
