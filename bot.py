@@ -575,7 +575,21 @@ def send_message(
 
     payload = {
         "chat_id": chat_id,
-        "text": text
+        "text": text,
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "📢 کانال روی چارت",
+                        "url": CHANNEL_URL
+                    },
+                    {
+                        "text": "💬 گروه روی چارت",
+                        "url": GROUP_URL
+                    }
+                ]
+            ]
+        }
     }
 
     if reply_to_message_id is not None:
@@ -584,10 +598,16 @@ def send_message(
             "message_id": reply_to_message_id
         }
 
-    requests.post(
+    response = requests.post(
         url,
         json=payload,
         timeout=10
+    )
+
+    print(
+        "TELEGRAM SEND:",
+        response.status_code,
+        response.text[:300]
     )
 
 
@@ -773,28 +793,6 @@ def webhook():
 
 
     # ==================================================
-    # /start
-    # ==================================================
-
-    if text.lower() == "/start":
-
-        send_message(
-            chat_id,
-
-            "🤖 ربات قیمت روی چارت\n\n"
-            "نام یا نماد ارز را بنویسید.\n\n"
-            "مثال:\n"
-            "تتر\n"
-            "بیت کوین\n"
-            "BTC\n"
-            "PEPE\n"
-            "APT"
-        )
-
-        return "ok"
-
-
-    # ==================================================
     # فیلتر پیام‌های گروه
     # ==================================================
 
@@ -806,6 +804,34 @@ def webhook():
         if not looks_like_coin(text):
 
             return "ok"
+
+
+    # ==================================================
+    # /start
+    # ==================================================
+
+    if text.lower() == "/start":
+
+        send_message(
+            chat_id,
+
+            "🤖 ربات روی چارت فعال است.\n\n"
+            "برای قیمت، نام یا نماد ارز را بنویسید.\n\n"
+            "برای تحلیل:\n"
+            "• تحلیل سولانا\n"
+            "• تحلیل XRP\n\n"
+            "برای نمایش تمام تحلیل‌های امروز:\n"
+            "• تحلیل های امروز\n\n"
+            "مثال قیمت:\n"
+            "بیت کوین\n"
+            "سولانا\n"
+            "لیسک\n"
+            "BTC\n"
+            "SOL\n"
+            "LSK"
+        )
+
+        return "ok"
 
 
     # ==================================================
