@@ -3,6 +3,7 @@ import requests
 import os
 import re
 import sqlite3
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -18,87 +19,42 @@ DB_FILE = "analyses.db"
 # =========================
 
 ALIASES = {
-    'تتر': 'USDT',
-    'دلار': 'USDT',
-    'بیت کوین': 'BTC',
-    'بیتکوین': 'BTC',
-    'بیت\u200cکوین': 'BTC',
-    'اتریوم': 'ETH',
-    'سولانا': 'SOL',
-    'ترون': 'TRX',
-    'دوج': 'DOGE',
-    'دوج کوین': 'DOGE',
-    'دوج\u200cکوین': 'DOGE',
-    'ریپل': 'XRP',
-    'بی ان بی': 'BNB',
-    'بی\u200cان\u200cبی': 'BNB',
-    'تون': 'TON',
-    'کاردانو': 'ADA',
-    'شیبا': 'SHIB',
-    'پپه': 'PEPE',
-    'آپتوس': 'APT',
-    'نات': 'NOT',
-    'چین لینک': 'LINK',
-    'چین\u200cلینک': 'LINK',
-    'پولکادات': 'DOT',
-    'آوالانچ': 'AVAX',
-    'لایت کوین': 'LTC',
-    'لایت\u200cکوین': 'LTC',
-    'تون کوین': 'TON',
-    'نات کوین': 'NOT',
-    'لیسک': 'LSK',
-    'فت': 'FET',
-    'آربیتروم': 'ARB',
-    'آپتیمیسم': 'OP',
-    'سویی': 'SUI',
-    'نیر': 'NEAR',
-    'اینجکتیو': 'INJ',
-    'اوندو': 'ONDO',
-    'مانترا': 'OM',
-    'استکس': 'STX',
-    'فایل کوین': 'FIL',
-    'گالا': 'GALA',
-    'سندباکس': 'SAND',
-    'مانا': 'MANA',
-    'یونی سواپ': 'UNI',
-    'یونی\u200cسواپ': 'UNI',
-    'آوه': 'AAVE',
-    'میکر': 'MKR',
-    'لیدو': 'LDO',
-    'پنکیک سواپ': 'CAKE',
-    'پنکیک\u200cسواپ': 'CAKE',
-    'کازماس': 'ATOM',
-    'هدرا': 'HBAR',
-    'استلار': 'XLM',
-    'الگوراند': 'ALGO',
-    'تزوس': 'XTZ',
-    'کاسپا': 'KAS',
-    'رندر': 'RENDER',
-    'رندر توکن': 'RENDER',
-    'ورلد کوین': 'WLD',
-    'بیت تنسور': 'TAO',
-    'بیتنسر': 'TAO',
-    'پایت': 'PYTH',
-    'جیتو': 'JTO',
-    'جاپیتر': 'JUP',
-    'سلستیا': 'TIA',
-    'مانتا': 'MANTA',
-    'پندل': 'PENDLE',
-    'تورچین': 'RUNE',
-    'سینتتیکس': 'SNX',
-    'فلوکی': 'FLOKI',
-    'بونک': 'BONK',
-    'داگز': 'DOGS',
-    'همستر': 'HMSTR',
-    'وتور توکن': 'VTHO',
-    'تراست والت توکن': 'TWT',
-    'توکو توکن': 'TKO',
-    'استارک نت': 'STRK',
-    'استارک\u200cنت': 'STRK',
-    'بایکو': 'BICO',
-    'بایکونومی': 'BICO',
-    'ولوت': 'VELVET',
-    'هیما': 'HEI',
+    "تتر": "USDT",
+    "دلار": "USDT",
+
+    "بیت کوین": "BTC",
+    "بیتکوین": "BTC",
+    "بیت‌کوین": "BTC",
+
+    "اتریوم": "ETH",
+    "سولانا": "SOL",
+    "ترون": "TRX",
+
+    "دوج": "DOGE",
+    "دوج کوین": "DOGE",
+    "دوج‌کوین": "DOGE",
+
+    "ریپل": "XRP",
+
+    "بی ان بی": "BNB",
+    "بی‌ان‌بی": "BNB",
+
+    "تون": "TON",
+    "کاردانو": "ADA",
+
+    "شیبا": "SHIB",
+    "پپه": "PEPE",
+    "آپتوس": "APT",
+    "نات": "NOT",
+
+    "چین لینک": "LINK",
+    "چین‌لینک": "LINK",
+
+    "پولکادات": "DOT",
+    "آوالانچ": "AVAX",
+
+    "لایت کوین": "LTC",
+    "لایت‌کوین": "LTC",
 }
 
 
@@ -468,6 +424,195 @@ def looks_like_coin(text):
 
 
 # =========================
+# نام فارسی ارزها از خود سایت تبدیل
+# =========================
+
+def normalize_coin_name(text):
+
+    text = normalize_text(text)
+
+    text = text.replace(
+        "\u200c",
+        " "
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
+
+    return text.strip().lower()
+
+
+def load_tabdeal_persian_names():
+
+    global TABDEAL_NAME_CACHE
+    global TABDEAL_CACHE_TIME
+
+    now = time.time()
+
+    if (
+        TABDEAL_NAME_CACHE
+        and
+        now - TABDEAL_CACHE_TIME
+        < TABDEAL_CACHE_TTL
+    ):
+        return TABDEAL_NAME_CACHE
+
+
+    mapping = {}
+
+    # صفحه فهرست عمومی تبدیل، همان صفحه‌ای که در سایت
+    # «نماد + نام فارسی» را نمایش می‌دهد.
+    base_url = (
+        "https://tabdeal.org/"
+        "buy-cryptocurrency"
+    )
+
+
+    for page in range(
+        1,
+        TABDEAL_MAX_PAGES + 1
+    ):
+
+        try:
+
+            params = {}
+
+            if page > 1:
+                params["page"] = page
+
+            response = requests.get(
+                base_url,
+                params=params,
+                timeout=8
+            )
+
+            if not response.ok:
+                continue
+
+            html = response.text
+
+
+            # -------------------------------------------------
+            # الگوی اصلی فهرست تبدیل:
+            #
+            # SYMBOL
+            # نام فارسی
+            # قیمت
+            # USDT / تومان
+            #
+            # چون HTML سایت ممکن است در آینده کمی تغییر کند،
+            # چند الگوی محدود را امتحان می‌کنیم.
+            # -------------------------------------------------
+
+            patterns = [
+
+                re.compile(
+                    r'\b([A-Z][A-Z0-9]{1,14})\b'
+                    r'\s+'
+                    r'([\u0600-\u06FF][\u0600-\u06FF\s\u200c‌\-]{1,70}?)'
+                    r'\s+'
+                    r'(?=[0-9۰-۹.,]+)'
+                ),
+
+                re.compile(
+                    r'"symbol"\s*:\s*"([A-Z0-9]{2,15})"'
+                    r'.{0,1000}?'
+                    r'"name"\s*:\s*"([^"]+)"',
+                    re.DOTALL
+                )
+            ]
+
+
+            for pattern in patterns:
+
+                for match in pattern.finditer(
+                    html
+                ):
+
+                    symbol = (
+                        match.group(1)
+                        .upper()
+                        .strip()
+                    )
+
+                    persian_name = (
+                        match.group(2)
+                        .strip()
+                    )
+
+
+                    if not re.fullmatch(
+                        r"[A-Z0-9]{2,15}",
+                        symbol
+                    ):
+                        continue
+
+
+                    # فقط نام‌هایی که واقعاً حروف فارسی دارند.
+                    if not re.search(
+                        r"[\u0600-\u06FF]",
+                        persian_name
+                    ):
+                        continue
+
+
+                    key = normalize_coin_name(
+                        persian_name
+                    )
+
+                    if key:
+                        mapping[key] = symbol
+
+
+        except Exception as e:
+
+            print(
+                "TABDEAL NAME PAGE ERROR:",
+                page,
+                repr(e)
+            )
+
+
+    # Aliasهای فعلی ربات اولویت دارند؛
+    # در نتیجه هیچ رفتار قبلی از بین نمی‌رود.
+    for name, symbol in ALIASES.items():
+
+        mapping[
+            normalize_coin_name(name)
+        ] = symbol
+
+
+    TABDEAL_NAME_CACHE = mapping
+    TABDEAL_CACHE_TIME = now
+
+    print(
+        "TABDEAL PERSIAN NAMES LOADED:",
+        len(mapping)
+    )
+
+    return mapping
+
+
+def find_symbol_from_tabdeal_name(
+    user_text
+):
+
+    key = normalize_coin_name(
+        user_text
+    )
+
+    if not key:
+        return None
+
+    mapping = load_tabdeal_persian_names()
+
+    return mapping.get(key)
+
+
+# =========================
 # پیدا کردن بازار تومانی
 # =========================
 
@@ -478,9 +623,29 @@ def find_symbol(user_text):
     upper_text = text.upper()
 
     if text in ALIASES:
+
         asset = ALIASES[text]
+
     else:
+
         asset = upper_text
+
+        # اگر ورودی فارسی بود و Alias دستی نداشت،
+        # نام فارسی را از فهرست خود سایت تبدیل پیدا کن.
+        if re.search(
+            r"[؀-ۿ]",
+            text
+        ):
+
+            tabdeal_asset = (
+                find_symbol_from_tabdeal_name(
+                    text
+                )
+            )
+
+            if tabdeal_asset:
+                asset = tabdeal_asset
+
 
     markets = get_markets()
 
