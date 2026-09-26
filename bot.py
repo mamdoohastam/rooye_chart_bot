@@ -242,12 +242,28 @@ def get_price(symbol, quote="IRT"):
     return float(asks[0][0]) if asks else None
 
 def keyboard():
-    return {
-        "inline_keyboard":[[
+    base_keyboard = {
+        "inline_keyboard": [[
             {"text":"📢 کانال روی چارت","url":CHANNEL_URL},
             {"text":"💬 گروه روی چارت","url":GROUP_URL}
         ]]
     }
+
+    exchange_menu = exchange_keyboard()
+
+    base_keyboard["inline_keyboard"].extend(
+        exchange_menu["inline_keyboard"]
+    )
+
+    return base_keyboard
+
+    exchange_menu = exchange_keyboard()
+
+    base_keyboard["inline_keyboard"].extend(
+        exchange_menu["inline_keyboard"]
+    )
+
+    return base_keyboard
 
 def send_message(chat_id,text,reply_to_message_id=None):
     payload = {
