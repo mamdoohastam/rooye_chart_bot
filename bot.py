@@ -283,6 +283,49 @@ def copy_analysis_message(target_chat_id,source_chat_id,source_message_id):
 def home():
     return "Rooye Chart Bot is running"
 
+
+def get_db_status():
+    try:
+        db_exists = os.path.exists(DB_FILE)
+        db_size = os.path.getsize(DB_FILE) if db_exists else 0
+
+        connection = sqlite3.connect(DB_FILE)
+        try:
+            total = connection.execute(
+                "SELECT COUNT(*) FROM analyses"
+            ).fetchone()[0]
+
+            by_symbol = connection.execute("""
+                SELECT symbol, COUNT(*), MAX(message_date)
+                FROM analyses
+                GROUP BY symbol
+                ORDER BY MAX(message_date) DESC
+                LIMIT 20
+            """).fetchall()
+        finally:
+            connection.close()
+
+        return db_exists, db_size, total, by_symbol
+    except Exception as e:
+        print("DB STATUS ERROR:", e)
+        return None
+
+
+def get_symbol_db_status(symbol):
+    symbol = (symbol or "").strip().upper()
+    connection = sqlite3.connect(DB_FILE)
+    try:
+        rows = connection.execute("""
+            SELECT chat_id,message_id,symbol,message_date,date_text
+            FROM analyses
+            WHERE UPPER(TRIM(symbol))=?
+            ORDER BY message_date DESC,id DESC
+            LIMIT 10
+        """,(symbol,)).fetchall()
+    finally:
+        connection.close()
+    return rows
+
 @app.route("/webhook",methods=["POST"])
 def webhook():
     data = request.get_json()
@@ -294,6 +337,70 @@ def webhook():
     chat_type = message["chat"].get("type","private")
     message_id = message.get("message_id")
     message_date = message.get("date")
+
+    # =========================
+    # تشخیص وضعیت دیتابیس
+    # فقط با دستورهای مخفی و در چت خصوصی
+    # =========================
+    text_for_command = message.get("text","").strip()
+
+    if chat_type == "private" and text_for_command == "/dbstatus":
+        status = get_db_status()
+        if status is None:
+            send_message(chat_id, "❌ خطا در خواندن دیتابیس.")
+            return "ok"
+
+        db_exists, db_size, total, by_symbol = status
+        reply = (
+            "🗄 وضعیت دیتابیس ربات\n\n"
+            f"وجود فایل: {'✅' if db_exists else '❌'}\n"
+            f"حجم: {db_size:,} bytes\n"
+            f"تعداد کل تحلیل‌های ثبت‌شده: {total}\n\n"
+            "آخرین رکوردهای ارزها:\n"
+        )
+
+        if by_symbol:
+            for symbol, count, latest_ts in by_symbol:
+                latest = datetime.fromtimestamp(
+                    latest_ts, tz=ZoneInfo("Asia/Tehran")
+                ).strftime("%Y-%m-%d %H:%M")
+                reply += f"• {symbol}: {count} رکورد | {latest}\n"
+        else:
+            reply += "هیچ تحلیلی در دیتابیس وجود ندارد."
+
+        send_message(chat_id, reply)
+        return "ok"
+
+    if chat_type == "private" and text_for_command.startswith("/dbsymbol"):
+        parts = text_for_command.split(maxsplit=1)
+        if len(parts) != 2:
+            send_message(chat_id, "مثال: /dbsymbol NEAR")
+            return "ok"
+
+        symbol = parts[1].strip().upper()
+        rows = get_symbol_db_status(symbol)
+
+        if not rows:
+            send_message(
+                chat_id,
+                f"🔎 برای {symbol} هیچ رکوردی در دیتابیس پیدا نشد."
+            )
+            return "ok"
+
+        reply = f"🔎 رکوردهای {symbol}\n\n"
+        for db_chat_id, db_message_id, db_symbol, ts, date_text in rows:
+            dt = datetime.fromtimestamp(
+                ts, tz=ZoneInfo("Asia/Tehran")
+            ).strftime("%Y-%m-%d %H:%M")
+            reply += (
+                f"• {dt}\n"
+                f"  chat_id: {db_chat_id}\n"
+                f"  message_id: {db_message_id}\n"
+                f"  date_text: {date_text}\n\n"
+            )
+
+        send_message(chat_id, reply)
+        return "ok"
 
     # ثبت تحلیل عکس + هشتگ
     if "photo" in message:
