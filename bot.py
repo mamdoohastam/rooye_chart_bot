@@ -298,44 +298,66 @@ def find_irt_market(exchange):
     return candidates[0]
 
 
-def get_exchange_last_price(exchange_id, asset):
-    """آخرین معامله را از صرافی مشخص می‌گیرد و در صورت نیاز به تومان تبدیل می‌کند."""
-    symbol, quote = find_exchange_market(exchange_id, asset)
-    if not symbol:
+def get_exchange_prices(exchange_id, asset):
+    """
+    آخرین معامله را در دو بازار ممکن برمی‌گرداند:
+    - بازار ریالی/تومانی (IRT/TMN/IRR)
+    - بازار USDT
+
+    اگر یکی از بازارها وجود نداشته باشد مقدار آن None است.
+    """
+    exchange = get_exchange_client(exchange_id)
+    markets = exchange.load_markets()
+    asset = asset.upper()
+
+    irt_symbol = None
+    irt_quote = None
+    usdt_symbol = None
+
+    for symbol, market in markets.items():
+        if (market.get("base") or "").upper() != asset:
+            continue
+        if market.get("active") is False:
+            continue
+        if market.get("spot") is False and market.get("type") not in (None, "spot"):
+            continue
+
+        quote = (market.get("quote") or "").upper()
+        if quote in {"IRT", "TMN", "IRR"} and irt_symbol is None:
+            irt_symbol, irt_quote = symbol, quote
+        elif quote == "USDT" and usdt_symbol is None:
+            usdt_symbol = symbol
+
+    if not irt_symbol and not usdt_symbol:
         raise LookupError(
             f"بازار {asset} در {EXCHANGES[exchange_id]['name']} پیدا نشد."
         )
 
-    exchange = get_exchange_client(exchange_id)
-    ticker = exchange.fetch_ticker(symbol)
-    last = ticker.get("last")
+    irt_price = None
+    if irt_symbol:
+        ticker = exchange.fetch_ticker(irt_symbol)
+        last = ticker.get("last")
+        if last is not None:
+            irt_price = float(last)
+            if irt_quote == "IRR":
+                irt_price /= 10
 
-    if last is None:
+    usdt_price = None
+    if usdt_symbol:
+        ticker = exchange.fetch_ticker(usdt_symbol)
+        last = ticker.get("last")
+        if last is not None:
+            usdt_price = float(last)
+
+    if irt_price is None and usdt_price is None:
         raise LookupError("آخرین قیمت معامله از صرافی دریافت نشد.")
 
-    value = float(last)
-
-    # بازار مستقیم ریالی/تومانی
-    if quote in {"IRT", "TMN", "IRR"}:
-        if quote == "IRR":
-            value /= 10
-        return value, symbol
-
-    # بازار USDT است؛ قیمت USDT را از همان صرافی می‌گیریم و به تومان تبدیل می‌کنیم.
-    usdt_symbol, usdt_quote = find_irt_market(exchange)
-    if not usdt_symbol:
-        raise LookupError("بازار USDT/IRT برای تبدیل قیمت پیدا نشد.")
-
-    usdt_ticker = exchange.fetch_ticker(usdt_symbol)
-    usdt_last = usdt_ticker.get("last")
-    if usdt_last is None:
-        raise LookupError("نرخ USDT برای تبدیل قیمت دریافت نشد.")
-
-    usdt_value = float(usdt_last)
-    if usdt_quote == "IRR":
-        usdt_value /= 10
-
-    return value * usdt_value, symbol
+    return {
+        "irt_price": irt_price,
+        "usdt_price": usdt_price,
+        "irt_symbol": irt_symbol,
+        "usdt_symbol": usdt_symbol,
+    }
 
 
 def looks_like_coin(text):
@@ -430,13 +452,27 @@ def send_exchange_price(chat_id, asset, exchange_id, reply_to_message_id=None):
     display_name = DISPLAY_NAMES.get(asset, asset)
 
     try:
-        price, market_symbol = get_exchange_last_price(exchange_id, asset)
-        text = (
-            f"🪙 {display_name}\n\n"
-            f"🏦 {exchange_name}\n"
-            f"💰 آخرین معامله: {price:,.0f} تومان\n"
-            f"📌 بازار: {market_symbol}"
-        )
+        prices = get_exchange_prices(exchange_id, asset)
+        lines = [
+            f"🪙 {display_name}",
+            "",
+            f"🏦 {exchange_name}",
+        ]
+
+        if prices["irt_price"] is not None:
+            lines.append(f"💰 آخرین معامله ریالی: {prices['irt_price']:,.0f} تومان")
+        if prices["usdt_price"] is not None:
+            lines.append(f"💵 آخرین معامله تتری: {prices['usdt_price']:,.4f} USDT")
+
+        markets = []
+        if prices["irt_symbol"]:
+            markets.append(prices["irt_symbol"])
+        if prices["usdt_symbol"]:
+            markets.append(prices["usdt_symbol"])
+        if markets:
+            lines.append(f"📌 بازار: {' | '.join(markets)}")
+
+        text = "\n".join(lines)
         send_message(chat_id, text, reply_to_message_id=reply_to_message_id)
     except Exception as e:
         print(f"EXCHANGE PRICE ERROR [{exchange_id}][{asset}]:", e)
