@@ -5,7 +5,7 @@ import re
 import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from exchange_menu import exchange_keyboard
+import ccxt
 
 app = Flask(__name__)
 
@@ -14,6 +14,36 @@ DB_FILE = "analyses.db"
 
 CHANNEL_URL = "https://t.me/rooye_chart"
 GROUP_URL = "https://t.me/rooye_chart_gap"
+
+# =========================
+# موتور استعلام قیمت صرافی‌ها
+# =========================
+# قیمت نمایش‌داده‌شده «آخرین معامله» (last trade) است.
+# فقط این ۴ صرافی در منوی قیمت نمایش داده می‌شوند.
+EXCHANGES = {
+    "nobitex": {"name": "نوبیتکس", "ccxt_id": "nobitex"},
+    "tabdeal": {"name": "تبدیل", "ccxt_id": "tabdeal"},
+    "bitpin": {"name": "بیت‌پین", "ccxt_id": "bitpin"},
+    "abantether": {"name": "آبان‌تتر", "ccxt_id": "abantether"},
+}
+
+EXCHANGE_ALIASES = {
+    "نوبیتکس": "nobitex",
+    "نوبی تکس": "nobitex",
+    "نوبی‌تکس": "nobitex",
+    "nobitex": "nobitex",
+    "تبدیل": "tabdeal",
+    "tabdeal": "tabdeal",
+    "بیت پین": "bitpin",
+    "بیت‌پین": "bitpin",
+    "bitpin": "bitpin",
+    "آبان تتر": "abantether",
+    "آبان‌تتر": "abantether",
+    "آبانتتر": "abantether",
+    "abantether": "abantether",
+}
+
+_exchange_clients = {}
 
 # =========================
 # نام‌های فارسی رایج
@@ -195,99 +225,216 @@ def extract_analysis_request(text):
         return upper
     return None
 
-def get_markets():
-    response = requests.get(
-        "https://api1.tabdeal.org/r/api/v1/exchangeInfo",
-        timeout=10
-    )
-    response.raise_for_status()
-    data = response.json()
-    return data if isinstance(data,list) else data.get("symbols",[])
+def get_exchange_client(exchange_id):
+    if exchange_id not in EXCHANGES:
+        raise ValueError("صرافی نامعتبر است.")
+
+    if exchange_id not in _exchange_clients:
+        ccxt_id = EXCHANGES[exchange_id]["ccxt_id"]
+        exchange_class = getattr(ccxt, ccxt_id)
+        _exchange_clients[exchange_id] = exchange_class({
+            "enableRateLimit": True,
+            "timeout": 10000,
+        })
+
+    return _exchange_clients[exchange_id]
+
+
+def find_exchange_market(exchange_id, asset):
+    """بازار تومانی/ریالی مناسب را برای ارز پیدا می‌کند."""
+    exchange = get_exchange_client(exchange_id)
+    markets = exchange.load_markets()
+    asset = asset.upper()
+
+    preferred = []
+    for symbol, market in markets.items():
+        if (market.get("base") or "").upper() != asset:
+            continue
+        if market.get("active") is False:
+            continue
+        if market.get("spot") is False and market.get("type") not in (None, "spot"):
+            continue
+
+        quote = (market.get("quote") or "").upper()
+        if quote in {"IRT", "TMN", "IRR"}:
+            preferred.append((symbol, quote))
+
+    if not preferred:
+        return None, None
+
+    preferred.sort(key=lambda item: 0 if item[1] in {"IRT", "TMN"} else 1)
+    return preferred[0]
+
+
+def get_exchange_last_price(exchange_id, asset):
+    """آخرین معامله را از صرافی مشخص می‌گیرد."""
+    symbol, quote = find_exchange_market(exchange_id, asset)
+    if not symbol:
+        raise LookupError(
+            f"بازار {asset} در {EXCHANGES[exchange_id]['name']} پیدا نشد."
+        )
+
+    exchange = get_exchange_client(exchange_id)
+    ticker = exchange.fetch_ticker(symbol)
+    last = ticker.get("last")
+
+    if last is None:
+        raise LookupError("آخرین قیمت معامله از صرافی دریافت نشد.")
+
+    value = float(last)
+
+    # IRR ریال است؛ خروجی ربات را به تومان نمایش می‌دهیم.
+    if quote == "IRR":
+        value /= 10
+
+    return value, symbol
+
 
 def looks_like_coin(text):
     text = normalize_text(text)
     if text in ALIASES:
         return True
-    if len(text.split()) > 3:
-        return False
     return bool(
-        re.fullmatch(r"[A-Za-z0-9]{2,15}",text) or
-        re.fullmatch(r"[آ-ی‌]{2,20}",text)
+        re.fullmatch(r"[A-Za-z0-9]{2,15}", text)
+        or re.fullmatch(r"[آ-ی‌]{2,20}(?: [آ-ی‌]{2,20})?", text)
     )
 
-def find_symbol(user_text):
-    text = normalize_text(user_text)
-    asset = ALIASES.get(text,text.upper())
 
-    for market in get_markets():
-        if market.get("status") != "TRADING":
-            continue
-        if market.get("quoteAsset") != "IRT":
-            continue
-        if market.get("baseAsset","").upper() == asset:
-            return market.get("symbol")
-    return None
+def parse_price_request(text):
+    """
+    نمونه‌ها:
+      سولانا             -> (SOL, None)
+      سولانا تبدیل       -> (SOL, tabdeal)
+      سولانا نوبیتکس     -> (SOL, nobitex)
+      SOL بیت‌پین        -> (SOL, bitpin)
+    """
+    normalized = normalize_text(text)
+    if not normalized:
+        return None, None
 
-def get_price(symbol, quote="IRT"):
-    market_symbol = symbol
-    if quote == "USDT" and symbol.endswith("IRT"):
-        market_symbol = symbol[:-3] + "USDT"
+    exchange_id = None
+    coin_text = normalized
 
-    response = requests.get(
-        "https://api1.tabdeal.org/r/api/v1/depth",
-        params={"symbol":market_symbol,"limit":1},
-        timeout=10
+    aliases = sorted(EXCHANGE_ALIASES.items(), key=lambda x: len(x[0]), reverse=True)
+    for alias, ex_id in aliases:
+        if normalized == alias:
+            return None, ex_id
+        if normalized.endswith(" " + alias):
+            coin_text = normalized[:-(len(alias) + 1)].strip()
+            exchange_id = ex_id
+            break
+
+    if exchange_id is None:
+        for alias, ex_id in aliases:
+            prefix = alias + " "
+            if normalized.startswith(prefix):
+                coin_text = normalized[len(prefix):].strip()
+                exchange_id = ex_id
+                break
+
+    if not coin_text:
+        return None, exchange_id
+
+    asset = ALIASES.get(coin_text, coin_text.upper())
+    if not re.fullmatch(r"[A-Z0-9]{2,15}", asset):
+        return None, exchange_id
+
+    return asset, exchange_id
+
+
+def exchange_keyboard(asset):
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "🟢 نوبیتکس", "callback_data": f"price:{asset}:nobitex"},
+                {"text": "🔵 تبدیل", "callback_data": f"price:{asset}:tabdeal"},
+            ],
+            [
+                {"text": "🟣 بیت‌پین", "callback_data": f"price:{asset}:bitpin"},
+                {"text": "🟠 آبان‌تتر", "callback_data": f"price:{asset}:abantether"},
+            ],
+        ]
+    }
+
+
+def send_exchange_menu(chat_id, asset):
+    name = DISPLAY_NAMES.get(asset, asset)
+    send_message(
+        chat_id,
+        f"💰 قیمت آخرین معامله {name}\n\nصرافی را انتخاب کنید:",
+        reply_markup=exchange_keyboard(asset),
     )
-    response.raise_for_status()
-    asks = response.json().get("asks",[])
-    return float(asks[0][0]) if asks else None
+
+
+def answer_callback(callback_id, text=None):
+    payload = {"callback_query_id": callback_id}
+    if text:
+        payload["text"] = text
+    requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
+        json=payload,
+        timeout=10,
+    )
+
+
+def send_exchange_price(chat_id, asset, exchange_id, reply_to_message_id=None):
+    exchange_name = EXCHANGES[exchange_id]["name"]
+    display_name = DISPLAY_NAMES.get(asset, asset)
+
+    try:
+        price, market_symbol = get_exchange_last_price(exchange_id, asset)
+        text = (
+            f"🪙 {display_name}\n\n"
+            f"🏦 {exchange_name}\n"
+            f"💰 آخرین معامله: {price:,.0f} تومان\n"
+            f"📌 بازار: {market_symbol}"
+        )
+        send_message(chat_id, text, reply_to_message_id=reply_to_message_id)
+    except Exception as e:
+        print(f"EXCHANGE PRICE ERROR [{exchange_id}][{asset}]:", e)
+        send_message(
+            chat_id,
+            f"⚠️ قیمت {display_name} در {exchange_name} در حال حاضر دریافت نشد.\n\n"
+            "ممکن است بازار این ارز در این صرافی فعال نباشد.",
+            reply_to_message_id=reply_to_message_id,
+        )
+
 
 def keyboard():
-    base_keyboard = {
+    # فقط لینک‌های کانال و گروه؛ منوی صرافی فقط هنگام درخواست قیمت نمایش داده می‌شود.
+    return {
         "inline_keyboard": [[
             {"text":"📢 کانال روی چارت","url":CHANNEL_URL},
             {"text":"💬 گروه روی چارت","url":GROUP_URL}
         ]]
     }
 
-    exchange_menu = exchange_keyboard()
 
-    base_keyboard["inline_keyboard"].extend(
-        exchange_menu["inline_keyboard"]
-    )
-
-    return base_keyboard
-
-    exchange_menu = exchange_keyboard()
-
-    base_keyboard["inline_keyboard"].extend(
-        exchange_menu["inline_keyboard"]
-    )
-
-    return base_keyboard
-
-def send_message(chat_id,text,reply_to_message_id=None):
+def send_message(chat_id, text, reply_to_message_id=None, reply_markup=None):
     payload = {
-        "chat_id":chat_id,
-        "text":text,
-        "reply_markup":keyboard()
+        "chat_id": chat_id,
+        "text": text,
     }
+
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+
     if reply_to_message_id is not None:
-        payload["reply_parameters"]={"message_id":reply_to_message_id}
+        payload["reply_parameters"] = {"message_id": reply_to_message_id}
 
     response = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
         json=payload, timeout=10
     )
-    print("SEND:",response.status_code,response.text[:300])
+    print("SEND:", response.status_code, response.text[:300])
     return response.ok
+
 
 def copy_analysis_message(target_chat_id,source_chat_id,source_message_id):
     payload = {
         "chat_id":target_chat_id,
         "from_chat_id":source_chat_id,
         "message_id":source_message_id,
-        "reply_markup":keyboard()
     }
     response = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage",
@@ -346,7 +493,43 @@ def get_symbol_db_status(symbol):
 @app.route("/webhook",methods=["POST"])
 def webhook():
     data = request.get_json()
-    if not data or "message" not in data:
+    if not data:
+        return "ok"
+
+    # =========================
+    # کلیک روی دکمه صرافی
+    # =========================
+    if "callback_query" in data:
+        callback = data["callback_query"]
+        callback_id = callback.get("id")
+        callback_data = callback.get("data", "")
+
+        if callback_data.startswith("price:"):
+            parts = callback_data.split(":")
+            if len(parts) == 3:
+                asset = parts[1].upper()
+                exchange_id = parts[2]
+
+                if exchange_id in EXCHANGES:
+                    answer_callback(callback_id, "در حال دریافت قیمت...")
+                    callback_message = callback.get("message", {})
+                    callback_chat = callback_message.get("chat", {})
+                    callback_chat_id = callback_chat.get("id")
+                    callback_message_id = callback_message.get("message_id")
+
+                    if callback_chat_id is not None:
+                        send_exchange_price(
+                            callback_chat_id,
+                            asset,
+                            exchange_id,
+                            reply_to_message_id=callback_message_id,
+                        )
+                    return "ok"
+
+        answer_callback(callback_id)
+        return "ok"
+
+    if "message" not in data:
         return "ok"
 
     message = data["message"]
@@ -514,15 +697,17 @@ def webhook():
         send_message(
             chat_id,
             "🤖 ربات روی چارت\n\n"
-            "برای قیمت، نام یا نماد ارز را بنویسید.\n\n"
+            "برای قیمت، فقط نام یا نماد ارز را بنویسید.\n"
+            "مثال: سولانا یا SOL\n\n"
+            "اگر نام صرافی را هم بنویسید، قیمت همان صرافی مستقیم نمایش داده می‌شود.\n"
+            "مثال: سولانا تبدیل\n"
+            "یا: سولانا نوبیتکس\n\n"
             "برای تحلیل:\n"
             "• تحلیل سولانا\n"
             "• تحلیل XRP\n"
             "• تحلیل FET\n\n"
             "برای همه تحلیل‌های امروز:\n"
-            "• تحلیل های امروز\n\n"
-            "مثال قیمت:\n"
-            "بیت کوین\nسولانا\nلیسک\nBTC\nSOL\nLSK"
+            "• تحلیل های امروز"
         )
         return "ok"
 
@@ -530,55 +715,33 @@ def webhook():
         return "ok"
 
     # =========================
-    # قیمت
+    # قیمت چند صرافی
     # =========================
-    try:
-        symbol = find_symbol(text)
+    asset, requested_exchange = parse_price_request(text)
 
-        if not symbol:
-            if chat_type in {"group","supergroup"}:
-                return "ok"
-            send_message(
-                chat_id,
-                "❌ این ارز در بازار تومانی تبدیل پیدا نشد."
-            )
+    if asset:
+        # فقط نام ارز: منوی انتخاب صرافی
+        if requested_exchange is None:
+            send_exchange_menu(chat_id, asset)
             return "ok"
 
-        toman_price = get_price(symbol,"IRT")
-        usdt_price = None
-
-        if symbol != "USDTIRT":
-            try:
-                usdt_price = get_price(symbol,"USDT")
-            except Exception as e:
-                print("USDT PRICE ERROR:",e)
-
-        if toman_price is None and usdt_price is None:
-            if chat_type in {"group","supergroup"}:
-                return "ok"
-            send_message(chat_id,"❌ قیمت این ارز در حال حاضر دریافت نشد.")
+        # نام ارز + نام صرافی: استعلام مستقیم
+        if requested_exchange in EXCHANGES:
+            send_exchange_price(chat_id, asset, requested_exchange)
             return "ok"
 
-        display_name = normalize_text(text)
-        reply = f"🪙 {display_name}\n\n"
+    if chat_type in {"group","supergroup"}:
+        return "ok"
 
-        if toman_price is not None:
-            reply += f"🇮🇷 تومان: {toman_price:,.0f}\n"
-
-        if display_name in {"تتر","دلار"}:
-            reply += "💵 تتر: 1 USDT"
-        elif usdt_price is not None:
-            value = f"{usdt_price:.8f}".rstrip("0").rstrip(".")
-            reply += f"💵 تتر: {value} USDT"
-
-        send_message(chat_id,reply)
-
-    except Exception as e:
-        print("ERROR:",e)
-        if chat_type in {"group","supergroup"}:
-            return "ok"
-        send_message(chat_id,"⚠️ خطا در دریافت قیمت. لطفاً دوباره امتحان کنید.")
-
+    send_message(
+        chat_id,
+        "❌ درخواست قیمت قابل تشخیص نیست.\n\n"
+        "مثال:\n"
+        "• سولانا\n"
+        "• SOL\n"
+        "• سولانا تبدیل\n"
+        "• سولانا نوبیتکس"
+    )
     return "ok"
 
 if __name__ == "__main__":
