@@ -5,6 +5,7 @@ import re
 import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from exchange_menu import exchange_keyboard
 
 app = Flask(__name__)
 
