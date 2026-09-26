@@ -74,10 +74,14 @@ def normalize_text(text):
 
 def extract_analysis_symbols(caption):
     hashtags = re.findall(r"#([A-Za-z0-9_]+)", caption or "")
-    return list({
-        h.upper() for h in hashtags
-        if re.fullmatch(r"[A-Z0-9]{2,15}", h.upper())
-    })
+    symbols = set()
+
+    for h in hashtags:
+        symbol = h.upper().strip()
+        if re.fullmatch(r"[A-Z0-9]{2,15}", symbol):
+            symbols.add(symbol)
+
+    return list(symbols)
 
 def save_analysis(chat_id, message_id, symbol, message_date):
     date_text = datetime.fromtimestamp(
@@ -93,23 +97,59 @@ def save_analysis(chat_id, message_id, symbol, message_date):
     connection.close()
 
 def get_latest_analysis(symbol, chat_id=None):
+    # آخرین تحلیل هیچ محدودیت روزانه‌ای ندارد.
+    # فقط جدیدترین رکورد همان ارز را بر اساس زمان پیام برمی‌گرداند.
+    symbol = (symbol or "").strip().upper()
+
     connection = sqlite3.connect(DB_FILE)
-    if chat_id is None:
-        row = connection.execute("""
-            SELECT chat_id,message_id
-            FROM analyses
-            WHERE symbol=?
-            ORDER BY message_date DESC,id DESC LIMIT 1
-        """,(symbol,)).fetchone()
-    else:
-        row = connection.execute("""
-            SELECT chat_id,message_id
-            FROM analyses
-            WHERE chat_id=? AND symbol=?
-            ORDER BY message_date DESC,id DESC LIMIT 1
-        """,(chat_id,symbol)).fetchone()
-    connection.close()
+    try:
+        if chat_id is None:
+            row = connection.execute("""
+                SELECT chat_id,message_id
+                FROM analyses
+                WHERE UPPER(TRIM(symbol))=?
+                ORDER BY message_date DESC,id DESC
+                LIMIT 1
+            """,(symbol,)).fetchone()
+        else:
+            row = connection.execute("""
+                SELECT chat_id,message_id
+                FROM analyses
+                WHERE chat_id=? AND UPPER(TRIM(symbol))=?
+                ORDER BY message_date DESC,id DESC
+                LIMIT 1
+            """,(chat_id,symbol)).fetchone()
+    finally:
+        connection.close()
+
     return row
+
+def get_latest_analysis_info(symbol, chat_id=None):
+    symbol = (symbol or "").strip().upper()
+
+    connection = sqlite3.connect(DB_FILE)
+    try:
+        if chat_id is None:
+            row = connection.execute("""
+                SELECT chat_id,message_id,message_date
+                FROM analyses
+                WHERE UPPER(TRIM(symbol))=?
+                ORDER BY message_date DESC,id DESC
+                LIMIT 1
+            """,(symbol,)).fetchone()
+        else:
+            row = connection.execute("""
+                SELECT chat_id,message_id,message_date
+                FROM analyses
+                WHERE chat_id=? AND UPPER(TRIM(symbol))=?
+                ORDER BY message_date DESC,id DESC
+                LIMIT 1
+            """,(chat_id,symbol)).fetchone()
+    finally:
+        connection.close()
+
+    return row
+
 
 def get_today_analyses(chat_id=None):
     today = datetime.now(ZoneInfo("Asia/Tehran")).strftime("%Y-%m-%d")
@@ -304,7 +344,7 @@ def webhook():
     if analysis_request:
         symbol = analysis_request
         search_chat_id = chat_id if chat_type in {"group","supergroup"} else None
-        row = get_latest_analysis(symbol,search_chat_id)
+        row = get_latest_analysis_info(symbol,search_chat_id)
 
         if not row:
             send_message(
@@ -313,25 +353,33 @@ def webhook():
             )
             return "ok"
 
-        source_chat_id,source_message_id = row
+        source_chat_id,source_message_id,analysis_date = row
         name = DISPLAY_NAMES.get(symbol,symbol)
+
+        analysis_time = datetime.fromtimestamp(
+            analysis_date, tz=ZoneInfo("Asia/Tehran")
+        ).strftime("%Y-%m-%d | %H:%M")
 
         if chat_type in {"group","supergroup"}:
             # هر بار درخواست شود، همان آخرین پیام اصلی را ریپلای می‌کند.
             send_message(
                 chat_id,
-                f"📊 آخرین تحلیل {name}:",
+                f"📊 آخرین تحلیل {name}\n🕐 {analysis_time}",
                 reply_to_message_id=source_message_id
             )
         else:
             # در خصوصی، آخرین تحلیل گروه را واقعاً به خصوصی کپی می‌کند.
+            send_message(
+                chat_id,
+                f"📊 آخرین تحلیل {name}\n🕐 {analysis_time}"
+            )
+
             if not copy_analysis_message(
                 chat_id,source_chat_id,source_message_id
             ):
                 send_message(
                     chat_id,
-                    f"📊 آخرین تحلیل {name}\n\n"
-                    "⚠️ پیام تحلیل پیدا شد ولی Telegram اجازه کپی آن را نداد."
+                    f"⚠️ پیام تحلیل پیدا شد ولی Telegram اجازه کپی آن را نداد."
                 )
         return "ok"
 
