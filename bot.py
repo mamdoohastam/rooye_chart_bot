@@ -314,6 +314,24 @@ def get_exchange_prices(exchange_id, asset):
     irt_quote = None
     usdt_symbol = None
 
+    # آبان‌تتر: جفت‌های SOL/IRT و SOL/USDT را مستقیماً هم امتحان می‌کنیم.
+    # این صرافی در بعضی نسخه‌های ccxt-ir ممکن است metadata بازار را
+    # با پرچم spot/type متفاوت برگرداند، در حالی که ticker قابل دریافت است.
+    if exchange_id == "abantether":
+        for direct_symbol in (f"{asset}/IRT", f"{asset}/IRR", f"{asset}/TMN"):
+            try:
+                exchange.fetch_ticker(direct_symbol)
+                irt_symbol = direct_symbol
+                irt_quote = direct_symbol.split("/")[-1].upper()
+                break
+            except Exception:
+                pass
+        try:
+            exchange.fetch_ticker(f"{asset}/USDT")
+            usdt_symbol = f"{asset}/USDT"
+        except Exception:
+            pass
+
     for symbol, market in markets.items():
         if (market.get("base") or "").upper() != asset:
             continue
