@@ -241,12 +241,19 @@ def get_exchange_client(exchange_id):
 
 
 def find_exchange_market(exchange_id, asset):
-    """بازار تومانی/ریالی مناسب را برای ارز پیدا می‌کند."""
+    """
+    بازار مناسب را پیدا می‌کند.
+
+    اول بازارهای ریالی/تومانی را ترجیح می‌دهیم؛ اگر وجود نداشت، بازار
+    USDT را برمی‌داریم تا قیمت را با نرخ USDT/IRT همان صرافی به تومان تبدیل کنیم.
+    این مهم است چون مثلاً SOL در بعضی صرافی‌های داخلی به صورت SOL/USDT
+    معامله می‌شود، نه SOL/IRT.
+    """
     exchange = get_exchange_client(exchange_id)
     markets = exchange.load_markets()
     asset = asset.upper()
 
-    preferred = []
+    candidates = []
     for symbol, market in markets.items():
         if (market.get("base") or "").upper() != asset:
             continue
@@ -256,18 +263,43 @@ def find_exchange_market(exchange_id, asset):
             continue
 
         quote = (market.get("quote") or "").upper()
-        if quote in {"IRT", "TMN", "IRR"}:
-            preferred.append((symbol, quote))
+        if quote in {"IRT", "TMN", "IRR", "USDT"}:
+            candidates.append((symbol, quote))
 
-    if not preferred:
+    if not candidates:
         return None, None
 
-    preferred.sort(key=lambda item: 0 if item[1] in {"IRT", "TMN"} else 1)
-    return preferred[0]
+    # قیمت مستقیم تومانی/ریالی اولویت دارد.
+    priority = {"IRT": 0, "TMN": 0, "IRR": 1, "USDT": 2}
+    candidates.sort(key=lambda item: priority.get(item[1], 99))
+    return candidates[0]
+
+
+def find_irt_market(exchange):
+    """بازار USDT/IRT یا USDT/TMN/IRR برای تبدیل قیمت دلاری به تومان."""
+    markets = exchange.load_markets()
+    candidates = []
+    for symbol, market in markets.items():
+        if (market.get("base") or "").upper() != "USDT":
+            continue
+        if market.get("active") is False:
+            continue
+        if market.get("spot") is False and market.get("type") not in (None, "spot"):
+            continue
+        quote = (market.get("quote") or "").upper()
+        if quote in {"IRT", "TMN", "IRR"}:
+            candidates.append((symbol, quote))
+
+    if not candidates:
+        return None, None
+
+    priority = {"IRT": 0, "TMN": 0, "IRR": 1}
+    candidates.sort(key=lambda item: priority.get(item[1], 99))
+    return candidates[0]
 
 
 def get_exchange_last_price(exchange_id, asset):
-    """آخرین معامله را از صرافی مشخص می‌گیرد."""
+    """آخرین معامله را از صرافی مشخص می‌گیرد و در صورت نیاز به تومان تبدیل می‌کند."""
     symbol, quote = find_exchange_market(exchange_id, asset)
     if not symbol:
         raise LookupError(
@@ -283,11 +315,27 @@ def get_exchange_last_price(exchange_id, asset):
 
     value = float(last)
 
-    # IRR ریال است؛ خروجی ربات را به تومان نمایش می‌دهیم.
-    if quote == "IRR":
-        value /= 10
+    # بازار مستقیم ریالی/تومانی
+    if quote in {"IRT", "TMN", "IRR"}:
+        if quote == "IRR":
+            value /= 10
+        return value, symbol
 
-    return value, symbol
+    # بازار USDT است؛ قیمت USDT را از همان صرافی می‌گیریم و به تومان تبدیل می‌کنیم.
+    usdt_symbol, usdt_quote = find_irt_market(exchange)
+    if not usdt_symbol:
+        raise LookupError("بازار USDT/IRT برای تبدیل قیمت پیدا نشد.")
+
+    usdt_ticker = exchange.fetch_ticker(usdt_symbol)
+    usdt_last = usdt_ticker.get("last")
+    if usdt_last is None:
+        raise LookupError("نرخ USDT برای تبدیل قیمت دریافت نشد.")
+
+    usdt_value = float(usdt_last)
+    if usdt_quote == "IRR":
+        usdt_value /= 10
+
+    return value * usdt_value, symbol
 
 
 def looks_like_coin(text):
