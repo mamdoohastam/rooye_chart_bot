@@ -818,11 +818,27 @@ def webhook():
             status = member.get("result", {}).get("status")
 
             if status not in {"creator", "administrator", "member"}:
-                send_message(
-                    chat_id,
-                    "🔒 برای استفاده از ربات، ابتدا باید عضو کانال روی چارت شوید.\n\n"
-                    "بعد از عضویت، روی «بررسی عضویت» بزنید."
-                )
+               send_message(
+    chat_id,
+    "🔒 برای استفاده از ربات، ابتدا باید عضو کانال روی چارت شوید.\n\n"
+    "بعد از عضویت، روی «بررسی عضویت» بزنید.",
+    reply_markup={
+        "inline_keyboard": [
+            [
+                {
+                    "text": "📢 عضویت در کانال",
+                    "url": CHANNEL_URL
+                }
+            ],
+            [
+                {
+                    "text": "✅ بررسی عضویت",
+                    "callback_data": "check_membership"
+                }
+            ]
+        ]
+    }
+)
                 return "ok"
 
         except Exception:
