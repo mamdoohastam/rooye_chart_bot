@@ -2,7 +2,7 @@ from flask import Flask, request
 import requests
 import os
 import re
-import sqlite3
+import psycopg
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import ccxt
