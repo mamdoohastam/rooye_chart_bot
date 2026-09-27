@@ -839,7 +839,6 @@ def webhook():
         ]
     }
 )
-        return "ok"
 
         except Exception:
             send_message(
@@ -847,7 +846,6 @@ def webhook():
                 "⚠️ در بررسی عضویت مشکلی پیش آمد. لطفاً چند لحظه بعد دوباره تلاش کنید."
             )
             return "ok"
-    if text.lower() == "/start":
         send_message(
             chat_id,
             "🤖 ربات روی چارت\n\n"
