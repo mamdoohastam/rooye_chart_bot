@@ -1,3 +1,4 @@
 flask
 requests
 ccxt-ir==4.20.1
+psycopg[binary]
