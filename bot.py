@@ -636,7 +636,51 @@ def webhook():
                             reply_to_message_id=callback_message_id,
                         )
                     return "ok"
+        if callback_data == "check_membership":
+            user_id = callback.get("from", {}).get("id")
 
+            try:
+                member = requests.get(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember",
+                    params={
+                        "chat_id": "@rooye_chart",
+                        "user_id": user_id
+                    },
+                    timeout=10
+                ).json()
+
+                status = member.get("result", {}).get("status")
+
+                if status in {"creator", "administrator", "member"}:
+                    answer_callback(
+                        callback_id,
+                        "✅ عضویت شما تأیید شد."
+                    )
+                    send_message(
+                        user_id,
+                        "✅ عضویت شما تأیید شد.\n\n"
+                        "🤖 حالا می‌توانید از ربات روی چارت استفاده کنید."
+                    )
+                else:
+                    answer_callback(
+                        callback_id,
+                        "❌ هنوز عضو کانال روی چارت نیستید."
+                    )
+                    send_message(
+                        user_id,
+                        "❌ عضویت شما تأیید نشد.\n\n"
+                        "ابتدا عضو کانال روی چارت شوید و سپس دوباره "
+                        "روی «بررسی عضویت» بزنید."
+                    )
+
+            except Exception as e:
+                print("MEMBERSHIP CHECK ERROR:", e)
+                answer_callback(
+                    callback_id,
+                    "⚠️ خطا در بررسی عضویت."
+                )
+
+            return "ok"
         answer_callback(callback_id)
         return "ok"
 
