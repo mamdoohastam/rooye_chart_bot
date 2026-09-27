@@ -80,28 +80,28 @@ DISPLAY_NAMES = {
     "LTC":"لایت‌کوین","USDT":"تتر",
 }
 
+def get_db_connection():
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+    return psycopg.connect(database_url)
+
+
 def init_database():
-    connection = sqlite3.connect(DB_FILE)
-    cursor = connection.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS analyses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
-            message_id INTEGER NOT NULL,
-            symbol TEXT NOT NULL,
-            message_date INTEGER NOT NULL,
-            date_text TEXT NOT NULL
-        )
-    """)
-    connection.commit()
-    connection.close()
+    # جدول analyses قبلاً در Supabase ساخته شده است.
+    # اینجا فقط اتصال دیتابیس را بررسی می‌کنیم.
+    with get_db_connection() as connection:
+        connection.execute("SELECT 1")
+
 
 init_database()
 
+
 def normalize_text(text):
     text = (text or "").strip()
-    text = text.replace("ي","ی").replace("ى","ی").replace("ك","ک")
-    return text.replace("@","").replace("$","").strip()
+    text = text.replace("ي", "ی").replace("ى", "ی").replace("ك", "ک")
+    return text.replace("@", "").replace("$", "").strip()
+
 
 def extract_analysis_symbols(caption):
     hashtags = re.findall(r"#([A-Za-z0-9_]+)", caption or "")
@@ -114,91 +114,100 @@ def extract_analysis_symbols(caption):
 
     return list(symbols)
 
+
 def save_analysis(chat_id, message_id, symbol, message_date):
     date_text = datetime.fromtimestamp(
         message_date, tz=ZoneInfo("Asia/Tehran")
     ).strftime("%Y-%m-%d")
-    connection = sqlite3.connect(DB_FILE)
-    connection.execute("""
-        INSERT INTO analyses
-        (chat_id,message_id,symbol,message_date,date_text)
-        VALUES (?,?,?,?,?)
-    """, (chat_id,message_id,symbol,date_text and message_date,date_text))
-    connection.commit()
-    connection.close()
+
+    with get_db_connection() as connection:
+        connection.execute("""
+            INSERT INTO analyses
+            (chat_id, message_id, symbol, message_date, date_text)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (
+            chat_id,
+            message_id,
+            symbol,
+            message_date,
+            date_text
+        ))
+
 
 def get_latest_analysis(symbol, chat_id=None):
     # آخرین تحلیل هیچ محدودیت روزانه‌ای ندارد.
-    # فقط جدیدترین رکورد همان ارز را بر اساس زمان پیام برمی‌گرداند.
+    # فقط جدیدترین رکورد همان ارز بر اساس زمان پیام برگردانده می‌شود.
     symbol = (symbol or "").strip().upper()
 
-    connection = sqlite3.connect(DB_FILE)
-    try:
+    with get_db_connection() as connection:
         if chat_id is None:
             row = connection.execute("""
-                SELECT chat_id,message_id
+                SELECT chat_id, message_id
                 FROM analyses
-                WHERE UPPER(TRIM(symbol))=?
-                ORDER BY message_date DESC,id DESC
+                WHERE UPPER(TRIM(symbol)) = %s
+                ORDER BY message_date DESC, id DESC
                 LIMIT 1
-            """,(symbol,)).fetchone()
+            """, (symbol,)).fetchone()
         else:
             row = connection.execute("""
-                SELECT chat_id,message_id
+                SELECT chat_id, message_id
                 FROM analyses
-                WHERE chat_id=? AND UPPER(TRIM(symbol))=?
-                ORDER BY message_date DESC,id DESC
+                WHERE chat_id = %s
+                  AND UPPER(TRIM(symbol)) = %s
+                ORDER BY message_date DESC, id DESC
                 LIMIT 1
-            """,(chat_id,symbol)).fetchone()
-    finally:
-        connection.close()
+            """, (chat_id, symbol)).fetchone()
 
     return row
+
 
 def get_latest_analysis_info(symbol, chat_id=None):
     symbol = (symbol or "").strip().upper()
 
-    connection = sqlite3.connect(DB_FILE)
-    try:
+    with get_db_connection() as connection:
         if chat_id is None:
             row = connection.execute("""
-                SELECT chat_id,message_id,message_date
+                SELECT chat_id, message_id, message_date
                 FROM analyses
-                WHERE UPPER(TRIM(symbol))=?
-                ORDER BY message_date DESC,id DESC
+                WHERE UPPER(TRIM(symbol)) = %s
+                ORDER BY message_date DESC, id DESC
                 LIMIT 1
-            """,(symbol,)).fetchone()
+            """, (symbol,)).fetchone()
         else:
             row = connection.execute("""
-                SELECT chat_id,message_id,message_date
+                SELECT chat_id, message_id, message_date
                 FROM analyses
-                WHERE chat_id=? AND UPPER(TRIM(symbol))=?
-                ORDER BY message_date DESC,id DESC
+                WHERE chat_id = %s
+                  AND UPPER(TRIM(symbol)) = %s
+                ORDER BY message_date DESC, id DESC
                 LIMIT 1
-            """,(chat_id,symbol)).fetchone()
-    finally:
-        connection.close()
+            """, (chat_id, symbol)).fetchone()
 
     return row
 
 
 def get_today_analyses(chat_id=None):
-    today = datetime.now(ZoneInfo("Asia/Tehran")).strftime("%Y-%m-%d")
-    connection = sqlite3.connect(DB_FILE)
-    if chat_id is None:
-        rows = connection.execute("""
-            SELECT symbol,message_id,chat_id,message_date
-            FROM analyses WHERE date_text=?
-            ORDER BY message_date ASC,id ASC
-        """,(today,)).fetchall()
-    else:
-        rows = connection.execute("""
-            SELECT symbol,message_id,chat_id,message_date
-            FROM analyses
-            WHERE chat_id=? AND date_text=?
-            ORDER BY message_date ASC,id ASC
-        """,(chat_id,today)).fetchall()
-    connection.close()
+    today = datetime.now(
+        ZoneInfo("Asia/Tehran")
+    ).strftime("%Y-%m-%d")
+
+    with get_db_connection() as connection:
+        if chat_id is None:
+            rows = connection.execute("""
+                SELECT symbol, message_id, chat_id, message_date
+                FROM analyses
+                WHERE date_text = %s
+                ORDER BY message_date ASC, id ASC
+            """, (today,)).fetchall()
+        else:
+            rows = connection.execute("""
+                SELECT symbol, message_id, chat_id, message_date
+                FROM analyses
+                WHERE chat_id = %s
+                  AND date_text = %s
+                ORDER BY message_date ASC, id ASC
+            """, (chat_id, today)).fetchall()
+
     return rows
 
 def extract_analysis_request(text):
