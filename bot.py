@@ -804,6 +804,33 @@ def webhook():
     # =========================
     # /start
     # =========================
+        # بررسی عضویت در کانال
+    if chat_type == "private":
+        try:
+            member = requests.get(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember",
+                params={
+                    "chat_id": "@rooye_chart",
+                    "user_id": chat_id
+                }
+            ).json()
+
+            status = member.get("result", {}).get("status")
+
+            if status not in {"creator", "administrator", "member"}:
+                send_message(
+                    chat_id,
+                    "🔒 برای استفاده از ربات، ابتدا باید عضو کانال روی چارت شوید.\n\n"
+                    "بعد از عضویت، روی «بررسی عضویت» بزنید."
+                )
+                return "ok"
+
+        except Exception:
+            send_message(
+                chat_id,
+                "⚠️ در بررسی عضویت مشکلی پیش آمد. لطفاً چند لحظه بعد دوباره تلاش کنید."
+            )
+            return "ok"
     if text.lower() == "/start":
         send_message(
             chat_id,
