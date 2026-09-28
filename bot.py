@@ -774,33 +774,25 @@ def webhook():
         send_message(chat_id, reply)
         return "ok"
 
-    # ثبت تحلیل عکس + هشتگ
+            # ثبت تحلیل عکس + هشتگ
         if "photo" in message:
-        symbols = extract_analysis_symbols(message.get("caption", ""))
-        photo_file_id = message["photo"][-1]["file_id"]
+            symbols = extract_analysis_symbols(message.get("caption", ""))
+            photo_file_id = message["photo"][-1]["file_id"]
 
-        for symbol in symbols:
-            save_analysis(
-                chat_id,
-                message_id,
-                symbol,
-                message_date,
-                photo_file_id
-            )
+            for symbol in symbols:
+                save_analysis(
+                    chat_id,
+                    message_id,
+                    symbol,
+                    message_date,
+                    photo_file_id
+                )
 
-        if symbols:
-            return "ok"
-            chat_id,
-            message_id,
-            symbol,
-            message_date,
-            photo_file_id
-        )
+            if symbols:
+                return "ok"
+          
 
-    if symbols:
-        return "ok"
-        if symbols:
-            return "ok"
+    
 
     text = message.get("text","").strip()
     if not text:
