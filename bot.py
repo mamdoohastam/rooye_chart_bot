@@ -115,7 +115,24 @@ def extract_analysis_symbols(caption):
     return list(symbols)
 
 
-def save_analysis(chat_id, message_id, symbol, message_date):
+def save_analysis(chat_id, message_id, symbol, message_date, photo_file_id=None):
+    date_text = datetime.fromtimestamp(
+        message_date, tz=ZoneInfo("Asia/Tehran")
+    ).strftime("%Y-%m-%d")
+
+    with get_db_connection() as connection:
+        connection.execute("""
+            INSERT INTO analyses
+            (chat_id, message_id, symbol, message_date, date_text, photo_file_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (
+            chat_id,
+            message_id,
+            symbol,
+            message_date,
+            date_text,
+            photo_file_id
+        ))
     date_text = datetime.fromtimestamp(
         message_date, tz=ZoneInfo("Asia/Tehran")
     ).strftime("%Y-%m-%d")
@@ -758,10 +775,21 @@ def webhook():
         return "ok"
 
     # ثبت تحلیل عکس + هشتگ
-    if "photo" in message:
-        symbols = extract_analysis_symbols(message.get("caption",""))
-        for symbol in symbols:
-            save_analysis(chat_id,message_id,symbol,message_date)
+   if "photo" in message:
+    symbols = extract_analysis_symbols(message.get("caption", ""))
+    photo_file_id = message["photo"][-1]["file_id"]
+
+    for symbol in symbols:
+        save_analysis(
+            chat_id,
+            message_id,
+            symbol,
+            message_date,
+            photo_file_id
+        )
+
+    if symbols:
+        return "ok"
         if symbols:
             return "ok"
 
