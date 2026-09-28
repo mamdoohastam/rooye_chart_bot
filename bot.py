@@ -775,7 +775,7 @@ def webhook():
         return "ok"
 
     # ثبت تحلیل عکس + هشتگ
-          if "photo" in message:
+            if "photo" in message:
         symbols = extract_analysis_symbols(message.get("caption", ""))
         photo_file_id = message["photo"][-1]["file_id"]
 
