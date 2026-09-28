@@ -1695,10 +1695,12 @@ def webhook():
         )
 
 
-        # در خصوصی، خود آخرین تحلیل‌ها
-        # هم ارسال شوند.
+                # در خصوصی، فقط تحلیل‌هایی که قبلاً ارسال نشده‌اند
+        # برای کاربر کپی شوند.
 
         if chat_type == "private":
+
+            sent_count = 0
 
             for (
                 symbol,
@@ -1710,10 +1712,32 @@ def webhook():
                 )
             ) in latest.items():
 
-                copy_analysis_message(
+                if was_analysis_sent(
                     chat_id,
                     source_chat,
                     msg_id
+                ):
+                    continue
+
+                copied = copy_analysis_message(
+                    chat_id,
+                    source_chat,
+                    msg_id
+                )
+
+                if copied:
+                    mark_analysis_as_sent(
+                        chat_id,
+                        source_chat,
+                        msg_id
+                    )
+
+                    sent_count += 1
+
+            if sent_count == 0:
+                send_message(
+                    chat_id,
+                    "📌 تحلیل‌های امروز قبلاً برای شما ارسال شده‌اند."
                 )
 
         return "ok"
