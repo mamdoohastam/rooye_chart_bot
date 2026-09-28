@@ -775,12 +775,21 @@ def webhook():
         return "ok"
 
     # ثبت تحلیل عکس + هشتگ
-   if "photo" in message:
-    symbols = extract_analysis_symbols(message.get("caption", ""))
-    photo_file_id = message["photo"][-1]["file_id"]
+      if "photo" in message:
+        symbols = extract_analysis_symbols(message.get("caption", ""))
+        photo_file_id = message["photo"][-1]["file_id"]
 
-    for symbol in symbols:
-        save_analysis(
+        for symbol in symbols:
+            save_analysis(
+                chat_id,
+                message_id,
+                symbol,
+                message_date,
+                photo_file_id
+            )
+
+        if symbols:
+            return "ok"
             chat_id,
             message_id,
             symbol,
