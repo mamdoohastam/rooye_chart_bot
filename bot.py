@@ -439,7 +439,54 @@ def get_latest_analysis_info(
 # =========================================================
 # تحلیل‌های امروز
 # =========================================================
+def was_analysis_sent(user_chat_id, source_chat_id, source_message_id):
+    with get_db_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM sent_today_analyses
+            WHERE user_chat_id = %s
+              AND source_chat_id = %s
+              AND source_message_id = %s
+            LIMIT 1
+            """,
+            (
+                user_chat_id,
+                source_chat_id,
+                source_message_id,
+            )
+        ).fetchone()
 
+    return row is not None
+
+def mark_analysis_as_sent(
+    user_chat_id,
+    source_chat_id,
+    source_message_id
+):
+    with get_db_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO sent_today_analyses
+            (
+                user_chat_id,
+                source_chat_id,
+                source_message_id
+            )
+            VALUES (%s, %s, %s)
+            ON CONFLICT (
+                user_chat_id,
+                source_chat_id,
+                source_message_id
+            )
+            DO NOTHING
+            """,
+            (
+                user_chat_id,
+                source_chat_id,
+                source_message_id,
+            )
+        )
 def get_today_analyses(chat_id=None):
 
     today = datetime.now(
