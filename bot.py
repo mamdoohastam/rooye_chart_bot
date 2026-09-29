@@ -36,6 +36,10 @@ EXCHANGES = {
         "name": "آبان‌تتر",
         "ccxt_id": "abantether",
     },
+    "ourbit": {
+        "name": "Ourbit",
+        "ccxt_id": None,
+    },
 }
 
 
