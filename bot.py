@@ -986,32 +986,18 @@ def parse_price_request(text):
 # =========================================================
 
 def exchange_keyboard(asset):
-
     return {
         "inline_keyboard": [
             [
-                {
-                    "text": "🟢 نوبیتکس",
-                    "callback_data":
-                        f"price:{asset}:nobitex"
-                },
-                {
-                    "text": "🔵 تبدیل",
-                    "callback_data":
-                        f"price:{asset}:tabdeal"
-                },
+                {"text": "🟢 نوبیتکس", "callback_data": f"price:{asset}:nobitex"},
+                {"text": "🔵 تبدیل", "callback_data": f"price:{asset}:tabdeal"},
             ],
             [
-                {
-                    "text": "🟣 بیت‌پین",
-                    "callback_data":
-                        f"price:{asset}:bitpin"
-                },
-                {
-                    "text": "🟠 آبان‌تتر",
-                    "callback_data":
-                        f"price:{asset}:abantether"
-                },
+                {"text": "🟣 بیت‌پین", "callback_data": f"price:{asset}:bitpin"},
+                {"text": "🟠 آبان‌تتر", "callback_data": f"price:{asset}:abantether"},
+            ],
+            [
+                {"text": "⚫ Ourbit", "callback_data": f"price:{asset}:ourbit"},
             ],
         ]
     }
