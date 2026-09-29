@@ -1290,7 +1290,7 @@ def webhook():
     # Callback Query
     # =====================================================
 
-    if "callback_query" in data:
+       if "callback_query" in data:
 
         callback = data[
             "callback_query"
@@ -1304,6 +1304,95 @@ def webhook():
             "data",
             ""
         )
+
+        # ================================================
+        # انتخاب تحلیل امروز
+        # ================================================
+
+        if callback_data.startswith(
+            "today_analysis:"
+        ):
+
+            symbol = callback_data.split(
+                ":",
+                1
+            )[1].upper().strip()
+
+            callback_message = callback.get(
+                "message",
+                {}
+            )
+
+            callback_chat = callback_message.get(
+                "chat",
+                {}
+            )
+
+            callback_chat_id = callback_chat.get(
+                "id"
+            )
+
+            callback_chat_type = callback_chat.get(
+                "type",
+                "private"
+            )
+
+            if callback_chat_id is None:
+
+                answer_callback(
+                    callback_id,
+                    "⚠️ خطا در تشخیص چت."
+                )
+
+                return "ok"
+
+            if callback_chat_type in {
+                "group",
+                "supergroup"
+            }:
+
+                search_chat_id = callback_chat_id
+
+            else:
+
+                search_chat_id = None
+
+            analysis = get_latest_analysis_info(
+                symbol,
+                search_chat_id
+            )
+
+            if not analysis:
+
+                answer_callback(
+                    callback_id,
+                    "❌ تحلیل این ارز پیدا نشد."
+                )
+
+                return "ok"
+
+            source_chat = analysis[0]
+            message_id = analysis[1]
+
+            answer_callback(
+                callback_id,
+                "📊 در حال ارسال تحلیل..."
+            )
+
+            copied = copy_analysis_message(
+                callback_chat_id,
+                source_chat,
+                message_id
+            )
+
+            if not copied:
+
+                send_message(
+                    callback_chat_id,
+                    "❌ ارسال تحلیل انجام نشد."
+                )
+
+            return "ok"
 
 
         # ================================================
@@ -1451,7 +1540,6 @@ def webhook():
         )
 
         return "ok"
-
 
     # =====================================================
     # پیام عادی
@@ -1692,7 +1780,7 @@ def webhook():
     # تحلیل‌های امروز
     # =====================================================
 
-    if analysis_request == "TODAY":
+       if analysis_request == "TODAY":
 
         if chat_type in {
             "group",
@@ -1715,6 +1803,66 @@ def webhook():
             )
 
             return "ok"
+
+        latest = {}
+
+        for (
+            symbol,
+            msg_id,
+            source_chat,
+            msg_date
+        ) in rows:
+
+            if (
+                symbol not in latest
+                or msg_date >= latest[
+                    symbol
+                ][3]
+            ):
+
+                latest[
+                    symbol
+                ] = (
+                    symbol,
+                    msg_id,
+                    source_chat,
+                    msg_date
+                )
+
+        buttons = []
+        row = []
+
+        for symbol in latest:
+
+            row.append({
+                "text": DISPLAY_NAMES.get(
+                    symbol,
+                    symbol
+                ),
+                "callback_data":
+                    f"today_analysis:{symbol}"
+            })
+
+            if len(row) == 2:
+
+                buttons.append(row)
+                row = []
+
+        if row:
+            buttons.append(row)
+
+        reply_markup = {
+            "inline_keyboard": buttons
+        }
+
+        send_message(
+            chat_id,
+            "📊 تحلیل‌های امروز روی چارت\n\n"
+            "🔽 تحلیل موردنظر را انتخاب کنید:",
+            reply_markup=reply_markup
+        )
+
+        return "ok"
 
 
         latest = {}
