@@ -749,6 +749,54 @@ def get_exchange_prices(
     exchange_id,
     asset
 ):
+
+    # =====================================================
+    # Ourbit - Public Spot API
+    # =====================================================
+    if exchange_id == "ourbit":
+
+        symbol = f"{asset.upper()}USDT"
+
+        response = requests.get(
+            "https://api.ourbit.com/api/v3/ticker/price",
+            params={
+                "symbol": symbol
+            },
+            timeout=10,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        print(
+            "OURBIT RESPONSE:",
+            data
+        )
+
+        if not isinstance(data, dict):
+            raise LookupError(
+                "پاسخ نامعتبر از Ourbit دریافت شد."
+            )
+
+        price = data.get("price")
+
+        if price is None:
+            raise LookupError(
+                f"قیمت {symbol} در Ourbit پیدا نشد."
+            )
+
+        return {
+            "irt_price": None,
+            "usdt_price": float(price),
+            "irt_symbol": None,
+            "usdt_symbol": symbol,
+        }
+
+
+    exchange = get_exchange_client(
+        exchange_id
+    )
     exchange = get_exchange_client(
         exchange_id
     )
