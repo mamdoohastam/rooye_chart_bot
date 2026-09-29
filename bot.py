@@ -1780,8 +1780,7 @@ def webhook():
     # تحلیل‌های امروز
     # =====================================================
 
-       if analysis_request == "TODAY":
-
+    if analysis_request == "TODAY":
         if chat_type in {
             "group",
             "supergroup"
