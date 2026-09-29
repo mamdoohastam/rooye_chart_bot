@@ -24,18 +24,23 @@ EXCHANGES = {
         "name": "نوبیتکس",
         "ccxt_id": "nobitex",
     },
+
     "tabdeal": {
         "name": "تبدیل",
         "ccxt_id": "tabdeal",
     },
+
     "bitpin": {
         "name": "بیت‌پین",
         "ccxt_id": "bitpin",
     },
+
     "abantether": {
         "name": "آبان‌تتر",
         "ccxt_id": "abantether",
-        "ourbit": {
+    },
+
+    "ourbit": {
         "name": "Ourbit",
         "ccxt_id": None,
     },
@@ -45,7 +50,6 @@ EXCHANGES = {
         "ccxt_id": "lbank",
     },
 }
-
 
 EXCHANGE_ALIASES = {
     "نوبیتکس": "nobitex",
