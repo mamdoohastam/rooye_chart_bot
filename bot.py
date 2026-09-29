@@ -35,10 +35,14 @@ EXCHANGES = {
     "abantether": {
         "name": "آبان‌تتر",
         "ccxt_id": "abantether",
-    },
-    "ourbit": {
+        "ourbit": {
         "name": "Ourbit",
         "ccxt_id": None,
+    },
+
+    "lbank": {
+        "name": "LBank",
+        "ccxt_id": "lbank",
     },
 }
 
@@ -56,12 +60,15 @@ EXCHANGE_ALIASES = {
     "بیت‌پین": "bitpin",
     "bitpin": "bitpin",
 
-    "آبان تتر": "abantether",
+      "آبان تتر": "abantether",
     "آبان‌تتر": "abantether",
     "آبانتتر": "abantether",
     "abantether": "abantether",
-}
 
+    "ourbit": "ourbit",
+    "lbank": "lbank",
+    "ال بانک": "lbank",
+}
 
 _exchange_clients = {}
 
@@ -1041,15 +1048,34 @@ def exchange_keyboard(asset):
     return {
         "inline_keyboard": [
             [
-                {"text": "🟢 نوبیتکس", "callback_data": f"price:{asset}:nobitex"},
-                {"text": "🔵 تبدیل", "callback_data": f"price:{asset}:tabdeal"},
+                {
+                    "text": "🟢 نوبیتکس",
+                    "callback_data": f"price:{asset}:nobitex"
+                },
+                {
+                    "text": "🔵 تبدیل",
+                    "callback_data": f"price:{asset}:tabdeal"
+                },
             ],
             [
-                {"text": "🟣 بیت‌پین", "callback_data": f"price:{asset}:bitpin"},
-                {"text": "🟠 آبان‌تتر", "callback_data": f"price:{asset}:abantether"},
+                {
+                    "text": "🟣 بیت‌پین",
+                    "callback_data": f"price:{asset}:bitpin"
+                },
+                {
+                    "text": "🟠 آبان‌تتر",
+                    "callback_data": f"price:{asset}:abantether"
+                },
             ],
             [
-                {"text": "⚫ Ourbit", "callback_data": f"price:{asset}:ourbit"},
+                {
+                    "text": "⚫ Ourbit",
+                    "callback_data": f"price:{asset}:ourbit"
+                },
+                {
+                    "text": "🔴 LBank",
+                    "callback_data": f"price:{asset}:lbank"
+                },
             ],
         ]
     }
