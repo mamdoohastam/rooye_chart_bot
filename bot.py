@@ -1726,7 +1726,20 @@ def webhook():
     # ثبت تحلیل عکس + هشتگ
     # =====================================================
 
-    if "photo" in message:
+        if "photo" in message:
+
+        sender_id = message.get(
+            "from",
+            {}
+        ).get(
+            "id"
+        )
+
+        # فقط تحلیل‌های ارسال‌شده توسط صاحب ربات
+        # وارد دیتابیس تحلیل‌ها شوند.
+        if sender_id != 6738956694:
+
+            return "ok"
 
         symbols = extract_analysis_symbols(
             message.get(
@@ -1752,7 +1765,6 @@ def webhook():
             )
 
         return "ok"
-
 
     # =====================================================
     # متن
