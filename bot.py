@@ -1726,18 +1726,38 @@ def webhook():
     # ثبت تحلیل عکس + هشتگ
     # =====================================================
 
-        if "photo" in message:
+         if "photo" in message:
 
         caption = message.get(
             "caption",
             ""
         )
 
-        # فقط تحلیل‌هایی که آدرس رسمی روی چارت را دارند
-        # در دیتابیس ثبت شوند.
         if "@rooye_chart" not in caption.lower():
 
             return "ok"
+
+        symbols = extract_analysis_symbols(
+            caption
+        )
+
+        photo_file_id = message[
+            "photo"
+        ][-1][
+            "file_id"
+        ]
+
+        for symbol in symbols:
+
+            save_analysis(
+                chat_id,
+                message_id,
+                symbol,
+                message_date,
+                photo_file_id
+            )
+
+        return "ok"
 
         symbols = extract_analysis_symbols(
             caption
