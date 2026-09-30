@@ -1722,33 +1722,45 @@ def webhook():
         return "ok"
 
 
-       # =====================================================
+    # =====================================================
     # ثبت تحلیل عکس + هشتگ
     # =====================================================
 
-    if "photo" in message:
+        if "photo" in message:
 
-        sender_id = message.get(
-            "from",
-            {}
-        ).get(
-            "id"
+        caption = message.get(
+            "caption",
+            ""
         )
 
-        sender_chat = message.get(
-            "sender_chat"
-        )
+        # فقط تحلیل‌هایی که آدرس رسمی روی چارت را دارند
+        # در دیتابیس ثبت شوند.
+        if "@rooye_chart" not in caption.lower():
 
-        print(
-            "ANALYSIS DEBUG:",
-            "sender_id=",
-            sender_id,
-            "sender_chat=",
-            sender_chat
-        )
-
-        if sender_id != 6738956694:
             return "ok"
+
+        symbols = extract_analysis_symbols(
+            caption
+        )
+
+        photo_file_id = message[
+            "photo"
+        ][-1][
+            "file_id"
+        ]
+
+        for symbol in symbols:
+
+            save_analysis(
+                chat_id,
+                message_id,
+                symbol,
+                message_date,
+                photo_file_id
+            )
+
+        return "ok"
+
 
     # =====================================================
     # متن
