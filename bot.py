@@ -1728,7 +1728,7 @@ def webhook():
 
     if "photo" in message:
 
-                sender_id = message.get(
+        sender_id = message.get(
             "from",
             {}
         ).get(
