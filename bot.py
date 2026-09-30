@@ -1722,11 +1722,11 @@ def webhook():
         return "ok"
 
 
-    # =====================================================
+       # =====================================================
     # ثبت تحلیل عکس + هشتگ
     # =====================================================
 
-            if "photo" in message:
+    if "photo" in message:
 
         sender_id = message.get(
             "from",
@@ -1736,7 +1736,6 @@ def webhook():
         )
 
         if sender_id != 6738956694:
-
             return "ok"
 
         symbols = extract_analysis_symbols(
