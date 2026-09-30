@@ -1728,24 +1728,24 @@ def webhook():
 
          if "photo" in message:
 
-        caption = message.get(
-            "caption",
-            ""
-        )
-
-        if "@rooye_chart" not in caption.lower():
-
-            return "ok"
-
-        symbols = extract_analysis_symbols(
-            caption
-        )
-
-        photo_file_id = message[
-            "photo"
-        ][-1][
-            "file_id"
-        ]
+            caption = message.get(
+                "caption",
+                ""
+            )
+    
+            if "@rooye_chart" not in caption.lower():
+    
+                return "ok"
+    
+            symbols = extract_analysis_symbols(
+                caption
+            )
+    
+            photo_file_id = message[
+                "photo"
+            ][-1][
+                "file_id"
+            ]
 
         for symbol in symbols:
 
