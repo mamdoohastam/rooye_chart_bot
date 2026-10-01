@@ -223,9 +223,96 @@ def get_db_connection():
     return psycopg.connect(database_url)
 
 
+# =========================================================
+# ثبت کلیک‌های استعلام قیمت
+# =========================================================
+
+def get_click_user_info(callback):
+    user = callback.get("from", {}) or {}
+    return {
+        "user_id": user.get("id"),
+        "username": user.get("username"),
+        "first_name": user.get("first_name"),
+        "last_name": user.get("last_name"),
+    }
+
+
+def log_price_click(
+    callback,
+    asset,
+    exchange_id,
+    allowed=True,
+    block_reason=None
+):
+    """ثبت کلیک قیمت برای شناسایی کاربر و بررسی رفتار کلیک‌ها."""
+    try:
+        user = get_click_user_info(callback)
+        message = callback.get("message", {}) or {}
+        chat = message.get("chat", {}) or {}
+
+        with get_db_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO price_click_logs
+                (
+                    user_id, username, first_name, last_name,
+                    chat_id, chat_type, asset, exchange_id,
+                    allowed, block_reason
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user.get("user_id"),
+                    user.get("username"),
+                    user.get("first_name"),
+                    user.get("last_name"),
+                    chat.get("id"),
+                    chat.get("type"),
+                    asset,
+                    exchange_id,
+                    allowed,
+                    block_reason,
+                )
+            )
+    except Exception as e:
+        # خطای ثبت لاگ نباید عملکرد اصلی ربات را متوقف کند.
+        print("PRICE CLICK LOG ERROR:", e)
+
+
 def init_database():
     with get_db_connection() as connection:
         connection.execute("SELECT 1")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS price_click_logs (
+                id BIGSERIAL PRIMARY KEY,
+                clicked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                user_id BIGINT,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                chat_id BIGINT,
+                chat_type TEXT,
+                asset TEXT,
+                exchange_id TEXT,
+                allowed BOOLEAN NOT NULL DEFAULT TRUE,
+                block_reason TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_price_click_logs_chat_time
+            ON price_click_logs (chat_id, clicked_at DESC)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_price_click_logs_user_time
+            ON price_click_logs (user_id, clicked_at DESC)
+            """
+        )
+        connection.commit()
 
 
 init_database()
@@ -1238,6 +1325,128 @@ def get_db_status():
         return None
 
 
+def get_price_click_report(minutes=60, limit=20):
+    """گزارش کاربران پرکلیک در گروه‌ها در بازه زمانی مشخص."""
+    minutes = max(1, min(int(minutes), 10080))
+    limit = max(1, min(int(limit), 50))
+
+    with get_db_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                user_id,
+                MAX(username) AS username,
+                MAX(first_name) AS first_name,
+                MAX(last_name) AS last_name,
+                COUNT(*) AS total_clicks,
+                COUNT(*) FILTER (WHERE allowed = TRUE) AS allowed_clicks,
+                COUNT(*) FILTER (WHERE allowed = FALSE) AS blocked_clicks,
+                MAX(clicked_at) AS last_click_at
+            FROM price_click_logs
+            WHERE clicked_at >= NOW() - (%s * INTERVAL '1 minute')
+              AND chat_type IN ('group', 'supergroup')
+              AND user_id IS NOT NULL
+            GROUP BY user_id
+            ORDER BY total_clicks DESC, last_click_at DESC
+            LIMIT %s
+            """,
+            (minutes, limit)
+        ).fetchall()
+
+    return rows
+
+
+def get_price_click_user(user_id, minutes=1440):
+    """جزئیات کلیک‌های یک کاربر در گروه‌ها."""
+    minutes = max(1, min(int(minutes), 10080))
+
+    with get_db_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                clicked_at, username, first_name, last_name,
+                chat_id, asset, exchange_id, allowed, block_reason
+            FROM price_click_logs
+            WHERE user_id = %s
+              AND clicked_at >= NOW() - (%s * INTERVAL '1 minute')
+              AND chat_type IN ('group', 'supergroup')
+            ORDER BY clicked_at DESC
+            LIMIT 100
+            """,
+            (user_id, minutes)
+        ).fetchall()
+
+    return rows
+
+
+def is_admin_user(user_id):
+    """فقط مدیر ربات اجازه دیدن گزارش کلیک‌ها را دارد."""
+    try:
+        configured = os.environ.get("ADMIN_USER_ID")
+        if configured:
+            return int(configured) == int(user_id)
+
+        # همان شناسه‌ای که در نسخه فعلی برای ثبت تحلیل‌ها به‌عنوان مدیر استفاده شده است.
+        return int(user_id) == 6738956694
+    except Exception:
+        return False
+
+
+def format_user_name(user_id, username, first_name, last_name):
+    parts = [p for p in (first_name, last_name) if p]
+    name = " ".join(parts).strip()
+
+    if username:
+        handle = f"@{username}"
+    else:
+        handle = "بدون یوزرنیم"
+
+    if name:
+        return f"{handle} | {name} | ID: {user_id}"
+
+    return f"{handle} | ID: {user_id}"
+
+
+def send_price_click_report(chat_id, minutes=60):
+    try:
+        rows = get_price_click_report(minutes, 20)
+    except Exception as e:
+        print("PRICE REPORT ERROR:", e)
+        send_message(chat_id, "❌ خطا در خواندن گزارش کلیک‌ها.")
+        return
+
+    if not rows:
+        send_message(
+            chat_id,
+            f"📊 در {minutes} دقیقه گذشته هیچ کلیک قیمتی در گروه ثبت نشده است."
+        )
+        return
+
+    reply = (
+        f"📊 کاربران پرکلیک ربات در گروه\n"
+        f"🕐 بازه: {minutes} دقیقه اخیر\n\n"
+    )
+
+    for i, row in enumerate(rows, 1):
+        (
+            user_id, username, first_name, last_name,
+            total_clicks, allowed_clicks, blocked_clicks, last_click_at
+        ) = row
+
+        last_click = last_click_at.astimezone(ZoneInfo("Asia/Tehran")).strftime(
+            "%H:%M:%S"
+        ) if last_click_at else "-"
+
+        reply += (
+            f"{i}. {format_user_name(user_id, username, first_name, last_name)}\n"
+            f"   🖱 کل کلیک: {total_clicks} | "
+            f"✅ مجاز: {allowed_clicks} | 🚫 مسدود: {blocked_clicks}\n"
+            f"   🕐 آخرین کلیک: {last_click}\n\n"
+        )
+
+    send_message(chat_id, reply)
+
+
 def get_symbol_db_status(symbol):
 
     symbol = (
@@ -1416,6 +1625,14 @@ def webhook():
 
                 if exchange_id in EXCHANGES:
 
+                    # فقط کلیک را ثبت می‌کنیم؛ فعلاً هیچ محدودیتی اعمال نمی‌شود.
+                    log_price_click(
+                        callback,
+                        asset,
+                        exchange_id,
+                        allowed=True
+                    )
+
                     answer_callback(
                         callback_id,
                         "در حال دریافت قیمت..."
@@ -1584,6 +1801,96 @@ def webhook():
 
     if (
         chat_type == "private"
+        and text_for_command.startswith("/priceusers")
+    ):
+        if not is_admin_user(chat_id):
+            send_message(chat_id, "⛔ این دستور فقط برای مدیر ربات فعال است.")
+            return "ok"
+
+        parts = text_for_command.split()
+        minutes = 60
+
+        if len(parts) > 1:
+            try:
+                minutes = int(parts[1])
+            except ValueError:
+                send_message(
+                    chat_id,
+                    "مثال: /priceusers 60\n\n"
+                    "عدد، تعداد دقیقه موردنظر است."
+                )
+                return "ok"
+
+        send_price_click_report(chat_id, minutes)
+        return "ok"
+
+
+    if (
+        chat_type == "private"
+        and text_for_command.startswith("/priceuser")
+    ):
+        if not is_admin_user(chat_id):
+            send_message(chat_id, "⛔ این دستور فقط برای مدیر ربات فعال است.")
+            return "ok"
+
+        parts = text_for_command.split()
+        if len(parts) < 2:
+            send_message(
+                chat_id,
+                "مثال: /priceuser 123456789"
+            )
+            return "ok"
+
+        try:
+            target_user_id = int(parts[1])
+        except ValueError:
+            send_message(chat_id, "❌ User ID باید عددی باشد.")
+            return "ok"
+
+        minutes = 1440
+        if len(parts) > 2:
+            try:
+                minutes = int(parts[2])
+            except ValueError:
+                send_message(chat_id, "مثال: /priceuser 123456789 1440")
+                return "ok"
+
+        try:
+            rows = get_price_click_user(target_user_id, minutes)
+        except Exception as e:
+            print("PRICE USER ERROR:", e)
+            send_message(chat_id, "❌ خطا در خواندن اطلاعات کاربر.")
+            return "ok"
+
+        if not rows:
+            send_message(
+                chat_id,
+                f"🔎 برای User ID {target_user_id} در {minutes} دقیقه اخیر کلیکی ثبت نشده است."
+            )
+            return "ok"
+
+        first = rows[0]
+        _, username, first_name, last_name, _, _, _, _, _ = first
+        reply = (
+            "🔎 جزئیات کلیک کاربر\n\n"
+            f"{format_user_name(target_user_id, username, first_name, last_name)}\n"
+            f"🕐 بازه: {minutes} دقیقه اخیر\n"
+            f"🖱 تعداد ثبت‌شده: {len(rows)}\n\n"
+        )
+
+        for row in rows[:30]:
+            clicked_at, username, first_name, last_name, group_id, asset, exchange_id, allowed, block_reason = row
+            dt = clicked_at.astimezone(ZoneInfo("Asia/Tehran")).strftime("%H:%M:%S")
+            exchange_name = EXCHANGES.get(exchange_id, {}).get("name", exchange_id)
+            status = "✅" if allowed else f"🚫 {block_reason or 'blocked'}"
+            reply += f"• {dt} | {asset} | {exchange_name} | {status} | گروه: {group_id}\n"
+
+        send_message(chat_id, reply)
+        return "ok"
+
+
+    if (
+        chat_type == "private"
         and text_for_command == "/dbstatus"
     ):
 
@@ -1725,17 +2032,21 @@ def webhook():
 
     if "photo" in message:
 
-        caption = message.get(
-            "caption",
-            ""
+        sender_id = message.get(
+            "from",
+            {}
+        ).get(
+            "id"
         )
 
-        # فقط تحلیل‌هایی که آدرس رسمی روی چارت را دارند ثبت شوند.
-        if "@rooye_chart" not in caption.lower():
+        if sender_id != 6738956694:
             return "ok"
 
         symbols = extract_analysis_symbols(
-            caption
+            message.get(
+                "caption",
+                ""
+            )
         )
 
         photo_file_id = message[
