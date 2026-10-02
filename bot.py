@@ -395,13 +395,19 @@ def answer_callback(callback_id, text=None):
 def copy_analysis_message(
     target_chat_id,
     source_chat_id,
-    source_message_id
+    source_message_id,
+    reply_to_message_id=None
 ):
     payload = {
         "chat_id": target_chat_id,
         "from_chat_id": source_chat_id,
         "message_id": source_message_id,
     }
+
+    if reply_to_message_id is not None:
+        payload["reply_parameters"] = {
+            "message_id": reply_to_message_id
+        }
 
     try:
         response = requests.post(
@@ -536,6 +542,52 @@ def get_latest_analysis_info(
             ).fetchone()
 
     return row
+
+
+def get_latest_two_analysis_info(
+    symbol,
+    chat_id=None
+):
+    """آخرین و تحلیل قبلی یک ارز را برای ساخت زنجیره Reply برمی‌گرداند."""
+    symbol = (symbol or "").strip().upper()
+
+    with get_db_connection() as connection:
+
+        if chat_id is None:
+            rows = connection.execute(
+                """
+                SELECT
+                    chat_id,
+                    message_id,
+                    message_date
+                FROM analyses
+                WHERE UPPER(TRIM(symbol)) = %s
+                ORDER BY message_date DESC, id DESC
+                LIMIT 2
+                """,
+                (symbol,)
+            ).fetchall()
+
+        else:
+            rows = connection.execute(
+                """
+                SELECT
+                    chat_id,
+                    message_id,
+                    message_date
+                FROM analyses
+                WHERE chat_id = %s
+                  AND UPPER(TRIM(symbol)) = %s
+                ORDER BY message_date DESC, id DESC
+                LIMIT 2
+                """,
+                (
+                    chat_id,
+                    symbol
+                )
+            ).fetchall()
+
+    return rows
 
 
 # =========================================================
@@ -1563,12 +1615,12 @@ def webhook():
 
                 search_chat_id = None
 
-            analysis = get_latest_analysis_info(
+            analyses = get_latest_two_analysis_info(
                 symbol,
                 search_chat_id
             )
 
-            if not analysis:
+            if not analyses:
 
                 answer_callback(
                     callback_id,
@@ -1577,8 +1629,14 @@ def webhook():
 
                 return "ok"
 
-            source_chat = analysis[0]
-            message_id = analysis[1]
+            latest_analysis = analyses[0]
+            source_chat = latest_analysis[0]
+            message_id = latest_analysis[1]
+            previous_message_id = (
+                analyses[1][1]
+                if len(analyses) > 1
+                else None
+            )
 
             answer_callback(
                 callback_id,
@@ -1588,7 +1646,15 @@ def webhook():
             copied = copy_analysis_message(
                 callback_chat_id,
                 source_chat,
-                message_id
+                message_id,
+                reply_to_message_id=(
+                    previous_message_id
+                    if callback_chat_type in {
+                        "group",
+                        "supergroup"
+                    }
+                    else None
+                )
             )
 
             if not copied:
@@ -2192,13 +2258,13 @@ def webhook():
             search_chat_id = None
 
 
-        row = get_latest_analysis_info(
+        analyses = get_latest_two_analysis_info(
             symbol,
             search_chat_id
         )
 
 
-        if not row:
+        if not analyses:
 
             send_message(
                 chat_id,
@@ -2210,11 +2276,15 @@ def webhook():
             return "ok"
 
 
-        (
-            source_chat_id,
-            source_message_id,
-            analysis_date
-        ) = row
+        latest_analysis = analyses[0]
+        source_chat_id = latest_analysis[0]
+        source_message_id = latest_analysis[1]
+        analysis_date = latest_analysis[2]
+        previous_message_id = (
+            analyses[1][1]
+            if len(analyses) > 1
+            else None
+        )
 
 
         name = DISPLAY_NAMES.get(
@@ -2238,17 +2308,37 @@ def webhook():
             "supergroup"
         }:
 
-            send_message(
-                chat_id,
-                f"📊 آخرین تحلیل {name}\n"
-                f"🕐 {analysis_time}",
-                reply_to_message_id=
-                    source_message_id
-            )
+            # اگر تحلیل قبلی همین ارز وجود داشته باشد، خود تحلیل جدید
+            # به‌صورت Reply زیر تحلیل قبلی کپی می‌شود.
+            # اگر اولین تحلیل باشد، رفتار قبلی حفظ می‌شود.
+            if previous_message_id is not None:
+
+                if not copy_analysis_message(
+                    chat_id,
+                    source_chat_id,
+                    source_message_id,
+                    reply_to_message_id=previous_message_id
+                ):
+                    send_message(
+                        chat_id,
+                        "⚠️ پیام تحلیل پیدا شد "
+                        "ولی Telegram اجازه کپی "
+                        "آن را نداد."
+                    )
+
+            else:
+
+                send_message(
+                    chat_id,
+                    f"📊 آخرین تحلیل {name}\n"
+                    f"🕐 {analysis_time}",
+                    reply_to_message_id=source_message_id
+                )
 
 
         else:
 
+            # رفتار خصوصی ربات بدون تغییر باقی می‌ماند.
             send_message(
                 chat_id,
                 f"📊 آخرین تحلیل {name}\n"
