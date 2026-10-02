@@ -312,6 +312,30 @@ def init_database():
             ON price_click_logs (user_id, clicked_at DESC)
             """
         )
+
+        # شناسه پیامِ کپی‌شده در چت مقصد را نگه می‌داریم تا Replyهای بعدی
+        # به پیام واقعی داخل همان گروه/چت اشاره کنند، نه به message_id منبع.
+        # این جدول فقط برای قابلیت Reply زنجیره‌ای است و اطلاعات analyses را تغییر نمی‌دهد.
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analysis_copies (
+                id BIGSERIAL PRIMARY KEY,
+                source_chat_id BIGINT NOT NULL,
+                source_message_id BIGINT NOT NULL,
+                target_chat_id BIGINT NOT NULL,
+                copied_message_id BIGINT NOT NULL,
+                symbol TEXT,
+                copied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (source_chat_id, source_message_id, target_chat_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_analysis_copies_target_symbol
+            ON analysis_copies (target_chat_id, symbol, copied_at DESC)
+            """
+        )
         connection.commit()
 
 
@@ -422,11 +446,94 @@ def copy_analysis_message(
             response.text[:500]
         )
 
-        return response.ok
+        if not response.ok:
+            return None
+
+        result = response.json().get("result", {}) or {}
+        copied_message_id = result.get("message_id")
+
+        if copied_message_id is None:
+            print("COPY ERROR: Telegram response has no message_id")
+            return None
+
+        return copied_message_id
 
     except Exception as e:
         print("COPY ERROR:", e)
-        return False
+        return None
+
+
+def save_analysis_copy(
+    source_chat_id,
+    source_message_id,
+    target_chat_id,
+    copied_message_id,
+    symbol=None
+):
+    """شناسه آخرین کپی یک تحلیل را در چت مقصد ثبت می‌کند."""
+    try:
+        with get_db_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO analysis_copies
+                (
+                    source_chat_id,
+                    source_message_id,
+                    target_chat_id,
+                    copied_message_id,
+                    symbol
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (
+                    source_chat_id,
+                    source_message_id,
+                    target_chat_id
+                )
+                DO UPDATE SET
+                    copied_message_id = EXCLUDED.copied_message_id,
+                    symbol = EXCLUDED.symbol,
+                    copied_at = NOW()
+                """,
+                (
+                    source_chat_id,
+                    source_message_id,
+                    target_chat_id,
+                    copied_message_id,
+                    symbol,
+                )
+            )
+            connection.commit()
+    except Exception as e:
+        print("ANALYSIS COPY SAVE ERROR:", e)
+
+
+def get_analysis_copy_message_id(
+    source_chat_id,
+    source_message_id,
+    target_chat_id
+):
+    """message_id واقعیِ کپی‌شده در چت مقصد را برمی‌گرداند."""
+    try:
+        with get_db_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT copied_message_id
+                FROM analysis_copies
+                WHERE source_chat_id = %s
+                  AND source_message_id = %s
+                  AND target_chat_id = %s
+                LIMIT 1
+                """,
+                (
+                    source_chat_id,
+                    source_message_id,
+                    target_chat_id,
+                )
+            ).fetchone()
+        return row[0] if row else None
+    except Exception as e:
+        print("ANALYSIS COPY LOOKUP ERROR:", e)
+        return None
 
 
 # =========================================================
@@ -1632,36 +1739,58 @@ def webhook():
             latest_analysis = analyses[0]
             source_chat = latest_analysis[0]
             message_id = latest_analysis[1]
-            previous_message_id = (
-                analyses[1][1]
-                if len(analyses) > 1
-                else None
-            )
 
             answer_callback(
                 callback_id,
                 "📊 در حال ارسال تحلیل..."
             )
 
-            copied = copy_analysis_message(
+            reply_to_message_id = None
+
+            if callback_chat_type in {
+                "group",
+                "supergroup"
+            } and len(analyses) > 1:
+
+                previous_source_chat = analyses[1][0]
+                previous_source_message = analyses[1][1]
+
+                # اولویت با message_id واقعیِ کپی‌شده در همین گروه است.
+                reply_to_message_id = get_analysis_copy_message_id(
+                    previous_source_chat,
+                    previous_source_message,
+                    callback_chat_id
+                )
+
+                # اگر تحلیل قبلی مستقیماً داخل همین گروه ثبت شده باشد،
+                # همان message_id منبع برای Reply معتبر است.
+                if (
+                    reply_to_message_id is None
+                    and previous_source_chat == callback_chat_id
+                ):
+                    reply_to_message_id = previous_source_message
+
+            copied_message_id = copy_analysis_message(
                 callback_chat_id,
                 source_chat,
                 message_id,
-                reply_to_message_id=(
-                    previous_message_id
-                    if callback_chat_type in {
-                        "group",
-                        "supergroup"
-                    }
-                    else None
-                )
+                reply_to_message_id=reply_to_message_id
             )
 
-            if not copied:
+            if not copied_message_id:
 
                 send_message(
                     callback_chat_id,
                     "❌ ارسال تحلیل انجام نشد."
+                )
+
+            else:
+                save_analysis_copy(
+                    source_chat,
+                    message_id,
+                    callback_chat_id,
+                    copied_message_id,
+                    symbol
                 )
 
             return "ok"
@@ -2280,11 +2409,6 @@ def webhook():
         source_chat_id = latest_analysis[0]
         source_message_id = latest_analysis[1]
         analysis_date = latest_analysis[2]
-        previous_message_id = (
-            analyses[1][1]
-            if len(analyses) > 1
-            else None
-        )
 
 
         name = DISPLAY_NAMES.get(
@@ -2308,17 +2432,46 @@ def webhook():
             "supergroup"
         }:
 
-            # اگر تحلیل قبلی همین ارز وجود داشته باشد، خود تحلیل جدید
-            # به‌صورت Reply زیر تحلیل قبلی کپی می‌شود.
-            # اگر اولین تحلیل باشد، رفتار قبلی حفظ می‌شود.
-            if previous_message_id is not None:
+            reply_to_message_id = None
 
-                if not copy_analysis_message(
+            if len(analyses) > 1:
+                previous_source_chat = analyses[1][0]
+                previous_source_message = analyses[1][1]
+
+                # message_id پیام اصلیِ قبلی کافی نیست؛ برای Reply باید
+                # شناسه همان پیام در گروه مقصد را داشته باشیم.
+                reply_to_message_id = get_analysis_copy_message_id(
+                    previous_source_chat,
+                    previous_source_message,
+                    chat_id
+                )
+
+                # اگر منبع تحلیل خودش همین گروه باشد، message_id منبع
+                # همان message_id معتبر گروه است.
+                if (
+                    reply_to_message_id is None
+                    and previous_source_chat == chat_id
+                ):
+                    reply_to_message_id = previous_source_message
+
+            if reply_to_message_id is not None:
+
+                copied_message_id = copy_analysis_message(
                     chat_id,
                     source_chat_id,
                     source_message_id,
-                    reply_to_message_id=previous_message_id
-                ):
+                    reply_to_message_id=reply_to_message_id
+                )
+
+                if copied_message_id:
+                    save_analysis_copy(
+                        source_chat_id,
+                        source_message_id,
+                        chat_id,
+                        copied_message_id,
+                        symbol
+                    )
+                else:
                     send_message(
                         chat_id,
                         "⚠️ پیام تحلیل پیدا شد "
@@ -2328,11 +2481,18 @@ def webhook():
 
             else:
 
+                # اگر هنوز شناسه پیام قبلی در گروه را نداریم، رفتار قدیمی
+                # حفظ می‌شود. این حالت برای تحلیل‌های قدیمیِ قبل از ایجاد
+                # جدول analysis_copies هم ممکن است رخ دهد.
                 send_message(
                     chat_id,
                     f"📊 آخرین تحلیل {name}\n"
                     f"🕐 {analysis_time}",
-                    reply_to_message_id=source_message_id
+                    reply_to_message_id=(
+                        source_message_id
+                        if source_chat_id == chat_id
+                        else None
+                    )
                 )
 
 
