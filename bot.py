@@ -2032,21 +2032,18 @@ def webhook():
 
     if "photo" in message:
 
-        sender_id = message.get(
-            "from",
-            {}
-        ).get(
-            "id"
+        caption = message.get(
+            "caption",
+            ""
         )
 
-        if sender_id != 6738956694:
+        # فقط تحلیل‌های خود کانال/گروه روی چارت ثبت شوند.
+        # این شرط عمداً بر اساس @rooye_chart است، نه User ID فرستنده.
+        if "@rooye_chart" not in caption.lower():
             return "ok"
 
         symbols = extract_analysis_symbols(
-            message.get(
-                "caption",
-                ""
-            )
+            caption
         )
 
         photo_file_id = message[
