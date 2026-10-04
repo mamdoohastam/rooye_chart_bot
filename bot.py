@@ -2775,6 +2775,105 @@ def webhook():
     if (
         chat_type == "private"
         and text_for_command.startswith(
+            "/dbcopies"
+        )
+    ):
+
+        # ابزار تشخیصی موقت: فقط مدیر ربات می‌تواند mapping
+        # بین پیام اصلی تحلیل و کپی خصوصی را ببیند.
+        if not is_admin_user(chat_id):
+            send_message(
+                chat_id,
+                "❌ دسترسی ندارید."
+            )
+            return "ok"
+
+        parts = text_for_command.split(
+            maxsplit=1
+        )
+
+        if len(parts) != 2:
+            send_message(
+                chat_id,
+                "مثال: /dbcopies MAGMA"
+            )
+            return "ok"
+
+        symbol = parts[1].strip().upper()
+
+        try:
+            with get_db_connection() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT
+                        source_chat_id,
+                        source_message_id,
+                        target_chat_id,
+                        copied_message_id,
+                        symbol,
+                        copied_at
+                    FROM analysis_copies
+                    WHERE UPPER(TRIM(COALESCE(symbol, ''))) = %s
+                    ORDER BY copied_at DESC, id DESC
+                    LIMIT 100
+                    """,
+                    (symbol,)
+                ).fetchall()
+
+            if not rows:
+                send_message(
+                    chat_id,
+                    f"🔎 برای {symbol} هیچ رکوردی در analysis_copies پیدا نشد."
+                )
+                return "ok"
+
+            reply = (
+                f"🔗 رکوردهای analysis_copies برای {symbol}\n\n"
+            )
+
+            for (
+                source_chat_id,
+                source_message_id,
+                target_chat_id,
+                copied_message_id,
+                db_symbol,
+                copied_at
+            ) in rows:
+
+                if copied_at is not None:
+                    copied_text = copied_at.astimezone(
+                        ZoneInfo("Asia/Tehran")
+                    ).strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    copied_text = "-"
+
+                reply += (
+                    f"• copied_at: {copied_text}\n"
+                    f"  source_chat_id: {source_chat_id}\n"
+                    f"  source_message_id: {source_message_id}\n"
+                    f"  target_chat_id: {target_chat_id}\n"
+                    f"  copied_message_id: {copied_message_id}\n"
+                    f"  symbol: {db_symbol}\n\n"
+                )
+
+            send_message(
+                chat_id,
+                reply[:3900]
+            )
+
+        except Exception as e:
+            print("DB COPIES ERROR:", e)
+            send_message(
+                chat_id,
+                f"❌ خطا در خواندن analysis_copies:\n{e}"
+            )
+
+        return "ok"
+
+
+    if (
+        chat_type == "private"
+        and text_for_command.startswith(
             "/dbsymbol"
         )
     ):
