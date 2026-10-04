@@ -1747,15 +1747,13 @@ def webhook():
 
             reply_to_message_id = None
 
-            if callback_chat_type in {
-                "group",
-                "supergroup"
-            } and len(analyses) > 1:
+            if len(analyses) > 1:
 
                 previous_source_chat = analyses[1][0]
                 previous_source_message = analyses[1][1]
 
-                # اولویت با message_id واقعیِ کپی‌شده در همین گروه است.
+                # برای Reply باید message_id واقعیِ کپی‌شده در همین چت مقصد
+                # را داشته باشیم. این هم برای گروه و هم برای چت خصوصی معتبر است.
                 reply_to_message_id = get_analysis_copy_message_id(
                     previous_source_chat,
                     previous_source_message,
@@ -1763,12 +1761,20 @@ def webhook():
                 )
 
                 # اگر تحلیل قبلی مستقیماً داخل همین گروه ثبت شده باشد،
-                # همان message_id منبع برای Reply معتبر است.
+                # message_id منبع خودش در گروه معتبر است.
                 if (
                     reply_to_message_id is None
+                    and callback_chat_type in {
+                        "group",
+                        "supergroup"
+                    }
                     and previous_source_chat == callback_chat_id
                 ):
                     reply_to_message_id = previous_source_message
+
+                # محافظ ایمنی در برابر Reply به خودِ پیام.
+                if reply_to_message_id == message_id:
+                    reply_to_message_id = None
 
             copied_message_id = copy_analysis_message(
                 callback_chat_id,
@@ -2498,32 +2504,26 @@ def webhook():
 
         else:
 
-            # چت خصوصی: خودِ message_id تحلیل قبلیِ گروه در این چت معتبر نیست.
-            # اگر قبلاً تحلیل قبلی را برای همین کاربر کپی کرده‌ایم، به همان کپی Reply می‌کنیم.
-            # اگر lookup دیتابیس به هر دلیل شکست خورد، همچنان تحلیل جدید را بدون Reply می‌فرستیم؛
-            # بنابراین خراب شدن زنجیره نباید باعث شود دستور «تحلیل ...» هیچ پاسخی ندهد.
+            # در چت خصوصی هم باید زنجیرهٔ Reply بر اساس پیام‌های
+            # کپی‌شده در همان چت ساخته شود.
+            # یعنی اگر این جدیدترین تحلیل است، Reply باید به کپیِ
+            # تحلیل قبلیِ همان ارز در همین چت اشاره کند؛ نه به پیام
+            # اصلی داخل گروه و نه به خودِ پیام جدید.
             reply_to_message_id = None
 
-            try:
-                if len(analyses) > 1:
-                    previous_source_chat = analyses[1][0]
-                    previous_source_message = analyses[1][1]
-                    reply_to_message_id = get_analysis_copy_message_id(
-                        previous_source_chat,
-                        previous_source_message,
-                        chat_id
-                    )
-            except Exception as e:
-                print("PRIVATE REPLY LOOKUP ERROR:", e)
-                reply_to_message_id = None
+            if len(analyses) > 1:
+                previous_source_chat = analyses[1][0]
+                previous_source_message = analyses[1][1]
 
-            print(
-                "PRIVATE ANALYSIS:",
-                "target=", chat_id,
-                "source=", source_chat_id, source_message_id,
-                "reply_to=", reply_to_message_id,
-                "symbol=", symbol
-            )
+                reply_to_message_id = get_analysis_copy_message_id(
+                    previous_source_chat,
+                    previous_source_message,
+                    chat_id
+                )
+
+                # محافظ ایمنی: هرگز یک پیام را Reply خودش نکن.
+                if reply_to_message_id == source_message_id:
+                    reply_to_message_id = None
 
             copied_message_id = copy_analysis_message(
                 chat_id,
@@ -2533,6 +2533,8 @@ def webhook():
             )
 
             if copied_message_id:
+                # message_id واقعیِ کپی را ذخیره می‌کنیم تا تحلیل بعدی
+                # بتواند دقیقاً به همین پیام Reply شود.
                 save_analysis_copy(
                     source_chat_id,
                     source_message_id,
@@ -2541,6 +2543,7 @@ def webhook():
                     symbol
                 )
             else:
+
                 send_message(
                     chat_id,
                     "⚠️ پیام تحلیل پیدا شد "
