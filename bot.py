@@ -334,9 +334,27 @@ def init_database():
                 target_chat_id BIGINT NOT NULL,
                 copied_message_id BIGINT NOT NULL,
                 symbol TEXT,
-                copied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                UNIQUE (source_chat_id, source_message_id, target_chat_id)
+                copied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
+            """
+        )
+
+        # نسخه‌های قبلی یک UNIQUE اشتباه داشتند که symbol را در کلید حساب نمی‌کرد.
+        # نتیجه این بود که اگر یک پیام چند ارز داشت، رکورد یک ارز روی ارز دیگر
+        # overwrite می‌شد و زنجیره Reply به هم می‌ریخت.
+        connection.execute(
+            """
+            ALTER TABLE analysis_copies
+            DROP CONSTRAINT IF EXISTS
+                analysis_copies_source_chat_id_source_message_id_target_chat_id_key
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                ux_analysis_copies_source_target_symbol
+            ON analysis_copies
+            (source_chat_id, source_message_id, target_chat_id, symbol)
             """
         )
         connection.execute(
@@ -345,6 +363,30 @@ def init_database():
             ON analysis_copies (target_chat_id, symbol, copied_at DESC)
             """
         )
+
+        # رکوردهای نسخه خراب قبلی قابل اعتماد نیستند، چون ممکن است symbol آنها
+        # به‌علت overwrite شدن متعلق به ارز دیگری باشد. فقط جدول ردیابی کپی‌ها
+        # پاک می‌شود؛ جدول analyses و خود تحلیل‌ها دست‌نخورده می‌مانند.
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_migrations (
+                migration_key TEXT PRIMARY KEY,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        migration_key = "analysis_copies_symbol_key_v2"
+        migration_row = connection.execute(
+            "SELECT 1 FROM bot_migrations WHERE migration_key = %s LIMIT 1",
+            (migration_key,)
+        ).fetchone()
+        if migration_row is None:
+            connection.execute("DELETE FROM analysis_copies")
+            connection.execute(
+                "INSERT INTO bot_migrations (migration_key) VALUES (%s)",
+                (migration_key,)
+            )
+
         connection.commit()
 
 
@@ -560,11 +602,11 @@ def save_analysis_copy(
                 ON CONFLICT (
                     source_chat_id,
                     source_message_id,
-                    target_chat_id
+                    target_chat_id,
+                    symbol
                 )
                 DO UPDATE SET
                     copied_message_id = EXCLUDED.copied_message_id,
-                    symbol = EXCLUDED.symbol,
                     copied_at = NOW()
                 """,
                 (
@@ -612,9 +654,10 @@ def get_latest_analysis_copy_for_symbol(
 def get_analysis_copy_message_id(
     source_chat_id,
     source_message_id,
-    target_chat_id
+    target_chat_id,
+    symbol=None
 ):
-    """message_id واقعیِ کپی‌شده در چت مقصد را برمی‌گرداند."""
+    """message_id واقعیِ کپی‌شده همان ارز را در چت مقصد برمی‌گرداند."""
     try:
         with get_db_connection() as connection:
             row = connection.execute(
@@ -624,12 +667,15 @@ def get_analysis_copy_message_id(
                 WHERE source_chat_id = %s
                   AND source_message_id = %s
                   AND target_chat_id = %s
+                  AND UPPER(TRIM(COALESCE(symbol, ''))) = %s
+                ORDER BY copied_at DESC, id DESC
                 LIMIT 1
                 """,
                 (
                     source_chat_id,
                     source_message_id,
                     target_chat_id,
+                    (symbol or "").strip().upper(),
                 )
             ).fetchone()
         return row[0] if row else None
@@ -2095,7 +2141,8 @@ def webhook():
                 reply_to_message_id = get_analysis_copy_message_id(
                     previous_source_chat,
                     previous_source_message,
-                    callback_chat_id
+                    callback_chat_id,
+                    symbol
                 )
 
                 # اگر تحلیل قبلی مستقیماً در همین چت ثبت شده باشد،
@@ -2231,7 +2278,8 @@ def webhook():
                 reply_to_message_id = get_analysis_copy_message_id(
                     previous[0],
                     previous[1],
-                    callback_chat_id
+                    callback_chat_id,
+                    symbol
                 )
 
                 # اگر تحلیل قبلی مستقیماً در همین گروه باشد،
@@ -3113,7 +3161,8 @@ def webhook():
                 reply_to_message_id = get_analysis_copy_message_id(
                     previous_source_chat,
                     previous_source_message,
-                    chat_id
+                    chat_id,
+                    symbol
                 )
 
                 # اگر منبع تحلیل خودش همین گروه باشد، message_id منبع
@@ -3173,7 +3222,8 @@ def webhook():
             existing_current_copy = get_analysis_copy_message_id(
                 source_chat_id,
                 source_message_id,
-                chat_id
+                chat_id,
+                symbol
             )
 
             if existing_current_copy is not None:
@@ -3190,6 +3240,10 @@ def webhook():
                 chat_id,
                 symbol
             )
+
+            # هرگز اجازه نمی‌دهیم Reply به پیام فعلی یا رکورد ارز دیگری برسد.
+            if reply_to_message_id == existing_current_copy:
+                reply_to_message_id = None
 
             copied_message_id = copy_analysis_message(
                 chat_id,
