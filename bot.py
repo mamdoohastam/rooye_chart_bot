@@ -536,81 +536,6 @@ def get_analysis_copy_message_id(
         return None
 
 
-def copy_latest_analysis_to_chat(
-    target_chat_id,
-    analyses,
-    symbol
-):
-    """آخرین تحلیل را به چت مقصد کپی می‌کند و در صورت وجود، به کپی قبلی همان ارز Reply می‌زند."""
-    if not analyses:
-        return None, "no_analysis"
-
-    latest = analyses[0]
-    source_chat_id = latest[0]
-    source_message_id = latest[1]
-
-    # اگر همین تحلیل قبلاً برای این کاربر کپی شده، دوباره کپی نکن؛
-    # این کار جلوی زنجیره‌های اشتباه و Reply به همان پیام را می‌گیرد.
-    existing_copy_id = get_analysis_copy_message_id(
-        source_chat_id,
-        source_message_id,
-        target_chat_id
-    )
-
-    if existing_copy_id is not None:
-        return existing_copy_id, "already_copied"
-
-    reply_to_message_id = None
-
-    # analyses[1] یعنی تحلیل قبلیِ واقعی در منبع. فقط اگر کپی همان تحلیل
-    # در همین چت مقصد موجود باشد می‌توانیم به آن Reply کنیم.
-    if len(analyses) > 1:
-        previous_source_chat_id = analyses[1][0]
-        previous_source_message_id = analyses[1][1]
-
-        previous_copy_id = get_analysis_copy_message_id(
-            previous_source_chat_id,
-            previous_source_message_id,
-            target_chat_id
-        )
-
-        if (
-            previous_copy_id is not None
-            and previous_copy_id != source_message_id
-        ):
-            reply_to_message_id = previous_copy_id
-
-    print(
-        "PRIVATE ANALYSIS COPY:",
-        "target=", target_chat_id,
-        "source=", source_chat_id, source_message_id,
-        "reply_to=", reply_to_message_id,
-        "symbol=", symbol
-    )
-
-    copied_message_id = copy_analysis_message(
-        target_chat_id,
-        source_chat_id,
-        source_message_id,
-        reply_to_message_id=reply_to_message_id
-    )
-
-    if copied_message_id is None:
-        return None, "copy_failed"
-
-    save_analysis_copy(
-        source_chat_id,
-        source_message_id,
-        target_chat_id,
-        copied_message_id,
-        symbol
-    )
-
-    return copied_message_id, (
-        "replied" if reply_to_message_id is not None else "copied"
-    )
-
-
 # =========================================================
 # ثبت و استخراج هشتگ تحلیل
 # =========================================================
@@ -1845,42 +1770,28 @@ def webhook():
                 ):
                     reply_to_message_id = previous_source_message
 
-            if callback_chat_type in {
-                "group",
-                "supergroup"
-            }:
-                copied_message_id = copy_analysis_message(
+            copied_message_id = copy_analysis_message(
+                callback_chat_id,
+                source_chat,
+                message_id,
+                reply_to_message_id=reply_to_message_id
+            )
+
+            if not copied_message_id:
+
+                send_message(
                     callback_chat_id,
+                    "❌ ارسال تحلیل انجام نشد."
+                )
+
+            else:
+                save_analysis_copy(
                     source_chat,
                     message_id,
-                    reply_to_message_id=reply_to_message_id
-                )
-
-                if not copied_message_id:
-                    send_message(
-                        callback_chat_id,
-                        "❌ ارسال تحلیل انجام نشد."
-                    )
-                else:
-                    save_analysis_copy(
-                        source_chat,
-                        message_id,
-                        callback_chat_id,
-                        copied_message_id,
-                        symbol
-                    )
-            else:
-                copied_message_id, copy_status = copy_latest_analysis_to_chat(
                     callback_chat_id,
-                    analyses,
+                    copied_message_id,
                     symbol
                 )
-
-                if copy_status == "copy_failed":
-                    send_message(
-                        callback_chat_id,
-                        "❌ ارسال تحلیل انجام نشد."
-                    )
 
             return "ok"
 
@@ -2587,15 +2498,49 @@ def webhook():
 
         else:
 
-            # در چت خصوصی، Reply باید به message_id کپی قبلی در همان
-            # چت خصوصی اشاره کند؛ message_id پیام اصلی گروه معتبر نیست.
-            copied_message_id, copy_status = copy_latest_analysis_to_chat(
-                chat_id,
-                analyses,
-                symbol
+            # چت خصوصی: خودِ message_id تحلیل قبلیِ گروه در این چت معتبر نیست.
+            # اگر قبلاً تحلیل قبلی را برای همین کاربر کپی کرده‌ایم، به همان کپی Reply می‌کنیم.
+            # اگر lookup دیتابیس به هر دلیل شکست خورد، همچنان تحلیل جدید را بدون Reply می‌فرستیم؛
+            # بنابراین خراب شدن زنجیره نباید باعث شود دستور «تحلیل ...» هیچ پاسخی ندهد.
+            reply_to_message_id = None
+
+            try:
+                if len(analyses) > 1:
+                    previous_source_chat = analyses[1][0]
+                    previous_source_message = analyses[1][1]
+                    reply_to_message_id = get_analysis_copy_message_id(
+                        previous_source_chat,
+                        previous_source_message,
+                        chat_id
+                    )
+            except Exception as e:
+                print("PRIVATE REPLY LOOKUP ERROR:", e)
+                reply_to_message_id = None
+
+            print(
+                "PRIVATE ANALYSIS:",
+                "target=", chat_id,
+                "source=", source_chat_id, source_message_id,
+                "reply_to=", reply_to_message_id,
+                "symbol=", symbol
             )
 
-            if copy_status == "copy_failed":
+            copied_message_id = copy_analysis_message(
+                chat_id,
+                source_chat_id,
+                source_message_id,
+                reply_to_message_id=reply_to_message_id
+            )
+
+            if copied_message_id:
+                save_analysis_copy(
+                    source_chat_id,
+                    source_message_id,
+                    chat_id,
+                    copied_message_id,
+                    symbol
+                )
+            else:
                 send_message(
                     chat_id,
                     "⚠️ پیام تحلیل پیدا شد "
