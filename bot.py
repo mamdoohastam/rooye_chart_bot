@@ -355,6 +355,70 @@ init_database()
 # ابزارهای عمومی
 # =========================================================
 
+def gregorian_to_jalali(gy, gm, gd):
+    """تبدیل تاریخ میلادی به شمسی بدون نیاز به کتابخانه جانبی."""
+    g_days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    j_days_in_month = [31, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 29]
+
+    gy2 = gy - 1600
+    gm2 = gm - 1
+    gd2 = gd - 1
+
+    g_day_no = (365 * gy2
+                + (gy2 + 3) // 4
+                - (gy2 + 99) // 100
+                + (gy2 + 399) // 400)
+
+    for i in range(gm2):
+        g_day_no += g_days_in_month[i]
+    if gm2 > 1 and ((gy % 4 == 0 and gy % 100 != 0) or (gy % 400 == 0)):
+        g_day_no += 1
+    g_day_no += gd2
+
+    j_day_no = g_day_no - 79
+    j_np = j_day_no // 12053
+    j_day_no %= 12053
+
+    jy = 979 + 33 * j_np + 4 * (j_day_no // 1461)
+    j_day_no %= 1461
+
+    if j_day_no >= 366:
+        jy += (j_day_no - 1) // 365
+        j_day_no = (j_day_no - 1) % 365
+
+    i = 0
+    while i < 11 and j_day_no >= j_days_in_month[i]:
+        j_day_no -= j_days_in_month[i]
+        i += 1
+
+    jm = i + 1
+    jd = j_day_no + 1
+    return jy, jm, jd
+
+
+PERSIAN_MONTHS = {
+    1: "فروردین", 2: "اردیبهشت", 3: "خرداد",
+    4: "تیر", 5: "مرداد", 6: "شهریور",
+    7: "مهر", 8: "آبان", 9: "آذر",
+    10: "دی", 11: "بهمن", 12: "اسفند",
+}
+
+
+def format_jalali_date(timestamp):
+    dt = datetime.fromtimestamp(timestamp, tz=ZoneInfo("Asia/Tehran"))
+    jy, jm, jd = gregorian_to_jalali(dt.year, dt.month, dt.day)
+    return f"{jd} {PERSIAN_MONTHS[jm]} {jy}"
+
+
+def send_analysis_date(chat_id, copied_message_id, timestamp):
+    """تاریخ شمسی تحلیل را بلافاصله زیر/در Reply به خود تحلیل می‌فرستد."""
+    return send_message(
+        chat_id,
+        f"📅 تاریخ تحلیل: {format_jalali_date(timestamp)}",
+        reply_to_message_id=copied_message_id,
+    )
+
+
 def normalize_text(text):
     text = (text or "").strip()
 
@@ -3104,39 +3168,27 @@ def webhook():
 
         else:
 
-            # در چت خصوصی، Reply باید به آخرین کپیِ ثبت‌شده
-            # از همان ارز در همین چت خصوصی وصل شود.
-            # این message_id با message_id تحلیل اصلی گروه فرق دارد.
-            reply_to_message_id = None
+            # چت خصوصی: هر تحلیلِ منبع فقط یک‌بار برای هر کاربر کپی می‌شود.
+            # اگر همین تحلیل قبلاً کپی شده باشد، هرگز به خودش Reply نمی‌کنیم.
+            existing_current_copy = get_analysis_copy_message_id(
+                source_chat_id,
+                source_message_id,
+                chat_id
+            )
 
-            try:
-                reply_to_message_id = get_latest_analysis_copy_for_symbol(
+            if existing_current_copy is not None:
+                send_message(
                     chat_id,
-                    symbol
+                    "ℹ️ این تحلیل قبلاً برای شما ارسال شده است."
                 )
-            except Exception as e:
-                print("PRIVATE REPLY LOOKUP ERROR:", e)
-                reply_to_message_id = None
+                return "ok"
 
-            # اگر تحلیل قبلی مستقیماً در همین چت ثبت شده باشد،
-            # همان message_id معتبر است.
-            if reply_to_message_id is None and len(analyses) > 1:
-                previous_source_chat = analyses[1][0]
-                previous_source_message = analyses[1][1]
-
-                if previous_source_chat == chat_id:
-                    reply_to_message_id = previous_source_message
-
-            # هرگز به پیام فعلی خودش Reply نکن.
-            if reply_to_message_id == source_message_id:
-                reply_to_message_id = None
-
-            print(
-                "PRIVATE ANALYSIS:",
-                "target=", chat_id,
-                "source=", source_chat_id, source_message_id,
-                "reply_to=", reply_to_message_id,
-                "symbol=", symbol
+            # فقط آخرین تحلیلِ قبلی که واقعاً در همین چت خصوصی کپی شده
+            # Reply مقصد قرار می‌گیرد. اگر هیچ کپی قبلی وجود نداشته باشد،
+            # تحلیل فعلی بدون Reply ارسال می‌شود.
+            reply_to_message_id = get_latest_analysis_copy_for_symbol(
+                chat_id,
+                symbol
             )
 
             copied_message_id = copy_analysis_message(
@@ -3146,8 +3198,25 @@ def webhook():
                 reply_to_message_id=reply_to_message_id
             )
 
-            if copied_message_id:
+            # اگر Reply به پیام قبلی نامعتبر بود (مثلاً پیام قبلی حذف شده)،
+            # خود تحلیل را بدون Reply دوباره امتحان می‌کنیم؛ این باعث نمی‌شود
+            # یک تحلیل معتبر فقط به خاطر Reply خراب از دست برود.
+            if not copied_message_id and reply_to_message_id is not None:
+                print(
+                    "COPY RETRY WITHOUT REPLY:",
+                    chat_id,
+                    symbol,
+                    source_chat_id,
+                    source_message_id
+                )
+                copied_message_id = copy_analysis_message(
+                    chat_id,
+                    source_chat_id,
+                    source_message_id,
+                    reply_to_message_id=None
+                )
 
+            if copied_message_id:
                 save_analysis_copy(
                     source_chat_id,
                     source_message_id,
@@ -3155,14 +3224,15 @@ def webhook():
                     copied_message_id,
                     symbol
                 )
-
+                send_analysis_date(
+                    chat_id,
+                    copied_message_id,
+                    analysis_date
+                )
             else:
-
                 send_message(
                     chat_id,
-                    "⚠️ پیام تحلیل پیدا شد "
-                    "ولی Telegram اجازه کپی "
-                    "آن را نداد."
+                    "⚠️ پیام تحلیل پیدا شد ولی Telegram اجازه کپی آن را نداد."
                 )
 
         return "ok"
