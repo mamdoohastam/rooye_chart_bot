@@ -3075,19 +3075,49 @@ def webhook():
 
         else:
 
-            # رفتار خصوصی ربات بدون تغییر باقی می‌ماند.
-            send_message(
-                chat_id,
-                f"📊 آخرین تحلیل {name}\n"
-                f"🕐 {analysis_time}"
-            )
+            # در چت خصوصی نیز تحلیل جدید باید Reply به آخرین
+            # تحلیل قبلی همان ارز باشد.
+            reply_to_message_id = None
 
+            if len(analyses) > 1:
 
-            if not copy_analysis_message(
+                previous_source_chat = analyses[1][0]
+                previous_source_message = analyses[1][1]
+
+                # اول شناسه نسخه کپی‌شده تحلیل قبلی در همین
+                # چت خصوصی را پیدا می‌کنیم.
+                reply_to_message_id = get_analysis_copy_message_id(
+                    previous_source_chat,
+                    previous_source_message,
+                    chat_id
+                )
+
+                # اگر منبع تحلیل قبلی همین چت باشد، message_id
+                # خودش قابل استفاده است.
+                if (
+                    reply_to_message_id is None
+                    and previous_source_chat == chat_id
+                ):
+                    reply_to_message_id = previous_source_message
+
+            copied_message_id = copy_analysis_message(
                 chat_id,
                 source_chat_id,
-                source_message_id
-            ):
+                source_message_id,
+                reply_to_message_id=reply_to_message_id
+            )
+
+            if copied_message_id:
+
+                save_analysis_copy(
+                    source_chat_id,
+                    source_message_id,
+                    chat_id,
+                    copied_message_id,
+                    symbol
+                )
+
+            else:
 
                 send_message(
                     chat_id,
