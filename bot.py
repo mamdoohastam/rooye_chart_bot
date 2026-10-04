@@ -516,6 +516,35 @@ def save_analysis_copy(
         print("ANALYSIS COPY SAVE ERROR:", e)
 
 
+def get_latest_analysis_copy_for_symbol(
+    target_chat_id,
+    symbol
+):
+    """آخرین پیام کپی‌شده همان ارز را در چت مقصد پیدا می‌کند."""
+    try:
+        with get_db_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT copied_message_id
+                FROM analysis_copies
+                WHERE target_chat_id = %s
+                  AND UPPER(TRIM(symbol)) = %s
+                ORDER BY copied_at DESC, id DESC
+                LIMIT 1
+                """,
+                (
+                    target_chat_id,
+                    (symbol or "").strip().upper(),
+                )
+            ).fetchone()
+
+        return row[0] if row else None
+
+    except Exception as e:
+        print("LATEST ANALYSIS COPY LOOKUP ERROR:", e)
+        return None
+
+
 def get_analysis_copy_message_id(
     source_chat_id,
     source_message_id,
@@ -3079,25 +3108,25 @@ def webhook():
             # تحلیل قبلی همان ارز باشد.
             reply_to_message_id = None
 
-            if len(analyses) > 1:
+            # در چت خصوصی، برای Reply کردن تحلیل جدید باید
+            # message_id واقعیِ آخرین تحلیل همان ارز را در همین
+            # چت خصوصی داشته باشیم.
+            #
+            # اینجا دیگر وابسته به source_message_id تحلیل قبلی نیستیم؛
+            # چون ممکن است تحلیل قبلی قبلاً در ربات کپی شده باشد ولی
+            # رکورد source آن با وضعیت فعلی متفاوت باشد.
+            reply_to_message_id = get_latest_analysis_copy_for_symbol(
+                chat_id,
+                symbol
+            )
 
+            # اگر تحلیل قبلی مستقیماً در همین چت ثبت شده باشد،
+            # message_id خودش معتبر است.
+            if reply_to_message_id is None and len(analyses) > 1:
                 previous_source_chat = analyses[1][0]
                 previous_source_message = analyses[1][1]
 
-                # اول شناسه نسخه کپی‌شده تحلیل قبلی در همین
-                # چت خصوصی را پیدا می‌کنیم.
-                reply_to_message_id = get_analysis_copy_message_id(
-                    previous_source_chat,
-                    previous_source_message,
-                    chat_id
-                )
-
-                # اگر منبع تحلیل قبلی همین چت باشد، message_id
-                # خودش قابل استفاده است.
-                if (
-                    reply_to_message_id is None
-                    and previous_source_chat == chat_id
-                ):
+                if previous_source_chat == chat_id:
                     reply_to_message_id = previous_source_message
 
             copied_message_id = copy_analysis_message(
