@@ -531,6 +531,8 @@ def answer_callback(callback_id, text=None):
         print("CALLBACK ERROR:", e)
 
 
+LAST_COPY_ERROR = ""
+
 def copy_analysis_message(
     target_chat_id,
     source_chat_id,
@@ -548,6 +550,9 @@ def copy_analysis_message(
             "message_id": reply_to_message_id
         }
 
+    global LAST_COPY_ERROR
+    LAST_COPY_ERROR = ""
+
     try:
         response = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage",
@@ -562,18 +567,21 @@ def copy_analysis_message(
         )
 
         if not response.ok:
+            LAST_COPY_ERROR = response.text[:1000]
             return None
 
         result = response.json().get("result", {}) or {}
         copied_message_id = result.get("message_id")
 
         if copied_message_id is None:
+            LAST_COPY_ERROR = response.text[:1000]
             print("COPY ERROR: Telegram response has no message_id")
             return None
 
         return copied_message_id
 
     except Exception as e:
+        LAST_COPY_ERROR = str(e)
         print("COPY ERROR:", e)
         return None
 
@@ -3286,7 +3294,8 @@ def webhook():
             else:
                 send_message(
                     chat_id,
-                    "⚠️ پیام تحلیل پیدا شد ولی Telegram اجازه کپی آن را نداد."
+                    "⚠️ کپی تحلیل توسط Telegram انجام نشد.\n\n"
+                    f"خطای واقعی Telegram:\n{LAST_COPY_ERROR or 'نامشخص'}"
                 )
 
         return "ok"
