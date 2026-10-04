@@ -1133,6 +1133,36 @@ def get_analysis_for_date(symbol, date_text, chat_id=None):
     return row
 
 
+def get_analysis_candidates_for_date(symbol, date_text, chat_id=None):
+    """همه رکوردهای یک ارز در یک تاریخ را برای یافتن پیام منبع معتبر برمی‌گرداند."""
+    symbol = (symbol or "").strip().upper()
+    with get_db_connection() as connection:
+        if chat_id is None:
+            rows = connection.execute(
+                """
+                SELECT chat_id, message_id, message_date
+                FROM analyses
+                WHERE UPPER(TRIM(symbol)) = %s
+                  AND date_text = %s
+                ORDER BY message_date DESC, id DESC
+                """,
+                (symbol, date_text)
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT chat_id, message_id, message_date
+                FROM analyses
+                WHERE chat_id = %s
+                  AND UPPER(TRIM(symbol)) = %s
+                  AND date_text = %s
+                ORDER BY message_date DESC, id DESC
+                """,
+                (chat_id, symbol, date_text)
+            ).fetchall()
+    return rows
+
+
 def get_previous_analysis_info(symbol, before_message_date, chat_id=None):
     """نزدیک‌ترین تحلیل قبلی همان ارز را قبل از یک تحلیل مشخص پیدا می‌کند."""
     symbol = (symbol or "").strip().upper()
@@ -2200,13 +2230,20 @@ def webhook():
                 reply_to_message_id=reply_to_message_id
             )
 
-            if not copied_message_id:
-
-                send_message(
+            if not copied_message_id and reply_to_message_id is not None:
+                copied_message_id = copy_analysis_message(
                     callback_chat_id,
-                    "❌ ارسال تحلیل انجام نشد."
+                    source_chat,
+                    message_id,
+                    reply_to_message_id=None
                 )
 
+            if not copied_message_id:
+                send_message(
+                    callback_chat_id,
+                    "❌ ارسال تحلیل انجام نشد.\n\n"
+                    f"خطای واقعی Telegram:\n{LAST_COPY_ERROR or 'نامشخص'}"
+                )
             else:
                 save_analysis_copy(
                     source_chat,
@@ -2214,6 +2251,11 @@ def webhook():
                     callback_chat_id,
                     copied_message_id,
                     symbol
+                )
+                send_analysis_date(
+                    callback_chat_id,
+                    copied_message_id,
+                    latest_analysis[2]
                 )
 
             return "ok"
@@ -2280,79 +2322,101 @@ def webhook():
             else:
                 search_chat_id = None
 
-            selected = get_analysis_for_date(
+            candidates = get_analysis_candidates_for_date(
                 symbol,
                 date_text,
                 search_chat_id
             )
 
-            if not selected:
-
+            if not candidates:
                 answer_callback(
                     callback_id,
                     "❌ تحلیل انتخاب‌شده پیدا نشد."
                 )
-
                 return "ok"
-
-            source_chat = selected[0]
-            message_id = selected[1]
 
             answer_callback(
                 callback_id,
                 "📊 در حال ارسال تحلیل..."
             )
 
-            previous = get_previous_analysis_info(
-                symbol,
-                selected[2],
-                search_chat_id
-            )
+            copied_message_id = None
+            selected = None
+            last_error = ""
 
-            reply_to_message_id = None
+            # ممکن است در یک روز برای یک ارز چند رکورد وجود داشته باشد.
+            # اگر جدیدترین رکورد به پیام حذف‌شده/نامعتبر اشاره کند، رکورد بعدی
+            # همان تاریخ را امتحان می‌کنیم.
+            for candidate in candidates:
+                source_chat = candidate[0]
+                message_id = candidate[1]
 
-            if previous:
-
-                # اگر تحلیل قبلی قبلاً در همین چت کپی شده باشد،
-                # Reply را به همان پیام واقعی می‌زنیم.
-                reply_to_message_id = get_analysis_copy_message_id(
-                    previous[0],
-                    previous[1],
-                    callback_chat_id,
-                    symbol
+                previous = get_previous_analysis_info(
+                    symbol,
+                    candidate[2],
+                    search_chat_id
                 )
 
-                # اگر تحلیل قبلی مستقیماً در همین گروه باشد،
-                # message_id خودش قابل استفاده است.
-                if (
-                    reply_to_message_id is None
-                    and previous[0] == callback_chat_id
-                ):
-                    reply_to_message_id = previous[1]
+                reply_to_message_id = None
+                if previous:
+                    reply_to_message_id = get_analysis_copy_message_id(
+                        previous[0],
+                        previous[1],
+                        callback_chat_id,
+                        symbol
+                    )
+                    if (
+                        reply_to_message_id is None
+                        and previous[0] == callback_chat_id
+                    ):
+                        reply_to_message_id = previous[1]
 
-            copied_message_id = copy_analysis_message(
-                callback_chat_id,
-                source_chat,
-                message_id,
-                reply_to_message_id=reply_to_message_id
-            )
-
-            if not copied_message_id:
-
-                send_message(
+                copied_message_id = copy_analysis_message(
                     callback_chat_id,
-                    "❌ ارسال تحلیل انجام نشد."
-                )
-
-            else:
-
-                save_analysis_copy(
                     source_chat,
                     message_id,
-                    callback_chat_id,
-                    copied_message_id,
-                    symbol
+                    reply_to_message_id=reply_to_message_id
                 )
+
+                # اگر فقط Reply قبلی خراب بود، خود تحلیل را بدون Reply بفرست.
+                if not copied_message_id and reply_to_message_id is not None:
+                    copied_message_id = copy_analysis_message(
+                        callback_chat_id,
+                        source_chat,
+                        message_id,
+                        reply_to_message_id=None
+                    )
+
+                if copied_message_id:
+                    selected = candidate
+                    break
+
+                last_error = LAST_COPY_ERROR or "نامشخص"
+                if "message to copy not found" not in last_error.lower():
+                    break
+
+            if not copied_message_id or selected is None:
+                send_message(
+                    callback_chat_id,
+                    "❌ ارسال تحلیل انجام نشد.\n\n"
+                    f"خطای واقعی Telegram:\n{last_error}"
+                )
+                return "ok"
+
+            save_analysis_copy(
+                selected[0],
+                selected[1],
+                callback_chat_id,
+                copied_message_id,
+                symbol
+            )
+
+            # تاریخ شمسی باید برای انتخاب‌های دیروز/۷ روز اخیر هم نمایش داده شود.
+            send_analysis_date(
+                callback_chat_id,
+                copied_message_id,
+                selected[2]
+            )
 
             return "ok"
 
