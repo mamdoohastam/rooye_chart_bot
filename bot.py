@@ -3348,9 +3348,42 @@ def webhook():
                         already_sent = True
                     break
 
-                reply_to_message_id = get_latest_analysis_copy_for_symbol(
-                    chat_id,
-                    symbol
+                # برای زنجیره خصوصی، اول کپیِ «تحلیل قبلیِ همین ارز»
+                # را پیدا می‌کنیم؛ نه صرفاً آخرین کپی ثبت‌شده برای نماد.
+                # این کار باعث می‌شود اگر چند رکورد قدیمی/تکراری وجود داشت،
+                # تحلیل جدید دقیقاً به تحلیل قبلی خودش Reply شود.
+                reply_to_message_id = None
+
+                for previous_candidate in candidates[
+                    candidates.index(candidate) + 1:
+                ]:
+                    previous_copy = get_analysis_copy_message_id(
+                        previous_candidate[0],
+                        previous_candidate[1],
+                        chat_id,
+                        symbol
+                    )
+
+                    if previous_copy is not None:
+                        reply_to_message_id = previous_copy
+                        break
+
+                # اگر برای هیچ‌کدام از تحلیل‌های قبلی mapping نداشتیم،
+                # آخرین کپی موفق همان ارز را به‌عنوان fallback استفاده می‌کنیم.
+                if reply_to_message_id is None:
+                    reply_to_message_id = get_latest_analysis_copy_for_symbol(
+                        chat_id,
+                        symbol
+                    )
+
+                print(
+                    "PRIVATE ANALYSIS REPLY TARGET:",
+                    symbol,
+                    "source=",
+                    candidate_source_chat,
+                    candidate_source_message,
+                    "reply_to=",
+                    reply_to_message_id
                 )
 
                 copied_message_id = copy_analysis_message(
