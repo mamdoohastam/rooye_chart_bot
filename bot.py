@@ -3,7 +3,7 @@ import requests
 import os
 import re
 import psycopg
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 import ccxt
 
@@ -280,15 +280,6 @@ def log_price_click(
 
 
 def init_database():
-    # تحلیل‌های دارای #WATCHLIST را جداگانه نگه می‌داریم.
-    with get_db_connection() as connection:
-        connection.execute(
-            """
-            ALTER TABLE analyses
-            ADD COLUMN IF NOT EXISTS watchlist BOOLEAN NOT NULL DEFAULT FALSE
-            """
-        )
-        connection.commit()
     with get_db_connection() as connection:
         connection.execute("SELECT 1")
         connection.execute(
@@ -516,35 +507,6 @@ def save_analysis_copy(
         print("ANALYSIS COPY SAVE ERROR:", e)
 
 
-def get_latest_analysis_copy_for_symbol(
-    target_chat_id,
-    symbol
-):
-    """آخرین پیام کپی‌شده همان ارز را در چت مقصد پیدا می‌کند."""
-    try:
-        with get_db_connection() as connection:
-            row = connection.execute(
-                """
-                SELECT copied_message_id
-                FROM analysis_copies
-                WHERE target_chat_id = %s
-                  AND UPPER(TRIM(symbol)) = %s
-                ORDER BY copied_at DESC, id DESC
-                LIMIT 1
-                """,
-                (
-                    target_chat_id,
-                    (symbol or "").strip().upper(),
-                )
-            ).fetchone()
-
-        return row[0] if row else None
-
-    except Exception as e:
-        print("LATEST ANALYSIS COPY LOOKUP ERROR:", e)
-        return None
-
-
 def get_analysis_copy_message_id(
     source_chat_id,
     source_message_id,
@@ -585,18 +547,9 @@ def extract_analysis_symbols(caption):
     )
 
     symbols = set()
-    is_watchlist = False
 
     for hashtag in hashtags:
         symbol = hashtag.upper().strip()
-
-        if symbol in {
-            "WATCHLIST",
-            "WATCH_LIST",
-            "WATCH-LIST"
-        }:
-            is_watchlist = True
-            continue
 
         if re.fullmatch(
             r"[A-Z0-9]{2,15}",
@@ -604,7 +557,7 @@ def extract_analysis_symbols(caption):
         ):
             symbols.add(symbol)
 
-    return list(symbols), is_watchlist
+    return list(symbols)
 
 
 def save_analysis(
@@ -612,8 +565,7 @@ def save_analysis(
     message_id,
     symbol,
     message_date,
-    photo_file_id=None,
-    watchlist=False
+    photo_file_id=None
 ):
     date_text = datetime.fromtimestamp(
         message_date,
@@ -630,10 +582,9 @@ def save_analysis(
                 symbol,
                 message_date,
                 date_text,
-                photo_file_id,
-                watchlist
+                photo_file_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
             (
                 chat_id,
@@ -642,7 +593,6 @@ def save_analysis(
                 message_date,
                 date_text,
                 photo_file_id,
-                watchlist,
             )
         )
 
@@ -843,195 +793,6 @@ def get_today_analyses(chat_id=None):
     return rows
 
 
-def get_analysis_range(start_date, end_date, chat_id=None):
-    """تحلیل‌های ثبت‌شده در یک بازه تاریخ شمسی را برمی‌گرداند."""
-    with get_db_connection() as connection:
-
-        if chat_id is None:
-            rows = connection.execute(
-                """
-                SELECT
-                    symbol,
-                    message_id,
-                    chat_id,
-                    message_date,
-                    date_text
-                FROM analyses
-                WHERE date_text BETWEEN %s AND %s
-                ORDER BY message_date ASC, id ASC
-                """,
-                (
-                    start_date,
-                    end_date
-                )
-            ).fetchall()
-
-        else:
-            rows = connection.execute(
-                """
-                SELECT
-                    symbol,
-                    message_id,
-                    chat_id,
-                    message_date,
-                    date_text
-                FROM analyses
-                WHERE chat_id = %s
-                  AND date_text BETWEEN %s AND %s
-                ORDER BY message_date ASC, id ASC
-                """,
-                (
-                    chat_id,
-                    start_date,
-                    end_date
-                )
-            ).fetchall()
-
-    return rows
-
-
-def get_watchlist_range(start_date, end_date, chat_id=None):
-    """
-    تحلیل‌هایی که با #WATCHLIST علامت خورده‌اند را در بازه مشخص برمی‌گرداند.
-    """
-    with get_db_connection() as connection:
-
-        if chat_id is None:
-            rows = connection.execute(
-                """
-                SELECT
-                    symbol,
-                    message_id,
-                    chat_id,
-                    message_date,
-                    date_text
-                FROM analyses
-                WHERE date_text BETWEEN %s AND %s
-                  AND watchlist = TRUE
-                ORDER BY message_date DESC, id DESC
-                """,
-                (start_date, end_date)
-            ).fetchall()
-
-        else:
-            rows = connection.execute(
-                """
-                SELECT
-                    symbol,
-                    message_id,
-                    chat_id,
-                    message_date,
-                    date_text
-                FROM analyses
-                WHERE chat_id = %s
-                  AND date_text BETWEEN %s AND %s
-                  AND watchlist = TRUE
-                ORDER BY message_date DESC, id DESC
-                """,
-                (chat_id, start_date, end_date)
-            ).fetchall()
-
-    return rows
-
-
-def get_analysis_for_date(symbol, date_text, chat_id=None):
-    """آخرین تحلیل یک ارز در یک تاریخ مشخص را برمی‌گرداند."""
-    symbol = (symbol or "").strip().upper()
-
-    with get_db_connection() as connection:
-
-        if chat_id is None:
-            row = connection.execute(
-                """
-                SELECT
-                    chat_id,
-                    message_id,
-                    message_date
-                FROM analyses
-                WHERE UPPER(TRIM(symbol)) = %s
-                  AND date_text = %s
-                ORDER BY message_date DESC, id DESC
-                LIMIT 1
-                """,
-                (
-                    symbol,
-                    date_text
-                )
-            ).fetchone()
-
-        else:
-            row = connection.execute(
-                """
-                SELECT
-                    chat_id,
-                    message_id,
-                    message_date
-                FROM analyses
-                WHERE chat_id = %s
-                  AND UPPER(TRIM(symbol)) = %s
-                  AND date_text = %s
-                ORDER BY message_date DESC, id DESC
-                LIMIT 1
-                """,
-                (
-                    chat_id,
-                    symbol,
-                    date_text
-                )
-            ).fetchone()
-
-    return row
-
-
-def get_previous_analysis_info(symbol, before_message_date, chat_id=None):
-    """نزدیک‌ترین تحلیل قبلی همان ارز را قبل از یک تحلیل مشخص پیدا می‌کند."""
-    symbol = (symbol or "").strip().upper()
-
-    with get_db_connection() as connection:
-
-        if chat_id is None:
-            row = connection.execute(
-                """
-                SELECT
-                    chat_id,
-                    message_id,
-                    message_date
-                FROM analyses
-                WHERE UPPER(TRIM(symbol)) = %s
-                  AND message_date < %s
-                ORDER BY message_date DESC, id DESC
-                LIMIT 1
-                """,
-                (
-                    symbol,
-                    before_message_date
-                )
-            ).fetchone()
-
-        else:
-            row = connection.execute(
-                """
-                SELECT
-                    chat_id,
-                    message_id,
-                    message_date
-                FROM analyses
-                WHERE chat_id = %s
-                  AND UPPER(TRIM(symbol)) = %s
-                  AND message_date < %s
-                ORDER BY message_date DESC, id DESC
-                LIMIT 1
-                """,
-                (
-                    chat_id,
-                    symbol,
-                    before_message_date
-                )
-            ).fetchone()
-
-    return row
-
-
 # =========================================================
 # درخواست تحلیل
 # =========================================================
@@ -1041,18 +802,6 @@ def extract_analysis_request(text):
     normalized = normalize_text(text)
 
     if normalized in {
-        "واچ لیست",
-        "واچ‌لیست",
-        "واچ لیست ها",
-        "واچ‌لیست‌ها",
-    } or normalized.lower() in {
-        "watchlist",
-        "watch list",
-        "watch-list",
-    }:
-        return "WATCHLIST"
-
-    if normalized in {
         "تحلیل های امروز",
         "تحلیل‌های امروز",
         "تحلیل امروز",
@@ -1060,26 +809,6 @@ def extract_analysis_request(text):
         "تحلیل‌های امروزم",
     }:
         return "TODAY"
-
-    if normalized in {
-        "تحلیل های دیروز",
-        "تحلیل‌های دیروز",
-        "تحلیل دیروز",
-        "تحلیلهای دیروز",
-    }:
-        return "YESTERDAY"
-
-    if normalized in {
-        "تحلیل های 7 روز اخیر",
-        "تحلیل‌های 7 روز اخیر",
-        "تحلیل 7 روز اخیر",
-        "تحلیلهای 7 روز اخیر",
-        "تحلیل های هفت روز اخیر",
-        "تحلیل‌های هفت روز اخیر",
-        "تحلیل هفت روز اخیر",
-        "تحلیلهای هفت روز اخیر",
-    }:
-        return "LAST7"
 
     if "تحلیل" not in normalized:
         return None
@@ -2023,160 +1752,29 @@ def webhook():
                 previous_source_chat = analyses[1][0]
                 previous_source_message = analyses[1][1]
 
-                # در گروه و همچنین داخل خود ربات، ابتدا دنبال
-                # message_id واقعیِ کپی‌شده از تحلیل قبلی می‌گردیم.
-                # بنابراین تحلیل امروز به آخرین تحلیل قبلی همان ارز
-                # Reply می‌شود؛ حتی اگر تحلیل قبلی مربوط به دیروز
-                # یا روزهای قبل باشد.
+                # برای Reply باید message_id واقعیِ کپی‌شده در همین چت مقصد
+                # را داشته باشیم. این هم برای گروه و هم برای چت خصوصی معتبر است.
                 reply_to_message_id = get_analysis_copy_message_id(
                     previous_source_chat,
                     previous_source_message,
                     callback_chat_id
                 )
 
-                # اگر تحلیل قبلی مستقیماً در همین چت ثبت شده باشد،
-                # همان message_id منبع برای Reply معتبر است.
+                # اگر تحلیل قبلی مستقیماً داخل همین گروه ثبت شده باشد،
+                # message_id منبع خودش در گروه معتبر است.
                 if (
                     reply_to_message_id is None
+                    and callback_chat_type in {
+                        "group",
+                        "supergroup"
+                    }
                     and previous_source_chat == callback_chat_id
                 ):
                     reply_to_message_id = previous_source_message
 
-            copied_message_id = copy_analysis_message(
-                callback_chat_id,
-                source_chat,
-                message_id,
-                reply_to_message_id=reply_to_message_id
-            )
-
-            if not copied_message_id:
-
-                send_message(
-                    callback_chat_id,
-                    "❌ ارسال تحلیل انجام نشد."
-                )
-
-            else:
-                save_analysis_copy(
-                    source_chat,
-                    message_id,
-                    callback_chat_id,
-                    copied_message_id,
-                    symbol
-                )
-
-            return "ok"
-
-
-# ================================================
-# انتخاب تحلیل تاریخی
-# ================================================
-
-        if callback_data.startswith(
-            "historical_analysis:"
-        ):
-
-            parts = callback_data.split(
-                ":",
-                2
-            )
-
-            if len(parts) != 3:
-
-                answer_callback(
-                    callback_id,
-                    "⚠️ اطلاعات تحلیل نامعتبر است."
-                )
-
-                return "ok"
-
-            date_text = parts[1]
-            symbol = parts[2].upper().strip()
-
-            callback_message = callback.get(
-                "message",
-                {}
-            )
-
-            callback_chat = callback_message.get(
-                "chat",
-                {}
-            )
-
-            callback_chat_id = callback_chat.get(
-                "id"
-            )
-
-            callback_chat_type = callback_chat.get(
-                "type",
-                "private"
-            )
-
-            if callback_chat_id is None:
-
-                answer_callback(
-                    callback_id,
-                    "⚠️ خطا در تشخیص چت."
-                )
-
-                return "ok"
-
-            if callback_chat_type in {
-                "group",
-                "supergroup"
-            }:
-                search_chat_id = callback_chat_id
-            else:
-                search_chat_id = None
-
-            selected = get_analysis_for_date(
-                symbol,
-                date_text,
-                search_chat_id
-            )
-
-            if not selected:
-
-                answer_callback(
-                    callback_id,
-                    "❌ تحلیل انتخاب‌شده پیدا نشد."
-                )
-
-                return "ok"
-
-            source_chat = selected[0]
-            message_id = selected[1]
-
-            answer_callback(
-                callback_id,
-                "📊 در حال ارسال تحلیل..."
-            )
-
-            previous = get_previous_analysis_info(
-                symbol,
-                selected[2],
-                search_chat_id
-            )
-
-            reply_to_message_id = None
-
-            if previous:
-
-                # اگر تحلیل قبلی قبلاً در همین چت کپی شده باشد،
-                # Reply را به همان پیام واقعی می‌زنیم.
-                reply_to_message_id = get_analysis_copy_message_id(
-                    previous[0],
-                    previous[1],
-                    callback_chat_id
-                )
-
-                # اگر تحلیل قبلی مستقیماً در همین گروه باشد،
-                # message_id خودش قابل استفاده است.
-                if (
-                    reply_to_message_id is None
-                    and previous[0] == callback_chat_id
-                ):
-                    reply_to_message_id = previous[1]
+                # محافظ ایمنی در برابر Reply به خودِ پیام.
+                if reply_to_message_id == message_id:
+                    reply_to_message_id = None
 
             copied_message_id = copy_analysis_message(
                 callback_chat_id,
@@ -2193,7 +1791,6 @@ def webhook():
                 )
 
             else:
-
                 save_analysis_copy(
                     source_chat,
                     message_id,
@@ -2646,7 +2243,7 @@ def webhook():
         if "@rooye_chart" not in caption.lower():
             return "ok"
 
-        symbols, is_watchlist = extract_analysis_symbols(
+        symbols = extract_analysis_symbols(
             caption
         )
 
@@ -2663,8 +2260,7 @@ def webhook():
                 message_id,
                 symbol,
                 message_date,
-                photo_file_id,
-                is_watchlist
+                photo_file_id
             )
 
         return "ok"
@@ -2689,202 +2285,6 @@ def webhook():
     analysis_request = extract_analysis_request(
         text
     )
-
-
-# =====================================================
-# واچ‌لیست ۷ روز اخیر
-# =====================================================
-
-    if analysis_request == "WATCHLIST":
-
-        tehran_now = datetime.now(
-            ZoneInfo("Asia/Tehran")
-        )
-
-        today_date = tehran_now.date()
-        start_date = today_date - timedelta(days=6)
-        end_date = today_date
-
-        start_text = start_date.strftime("%Y-%m-%d")
-        end_text = end_date.strftime("%Y-%m-%d")
-
-        if chat_type in {
-            "group",
-            "supergroup"
-        }:
-            search_chat_id = chat_id
-        else:
-            search_chat_id = None
-
-        rows = get_watchlist_range(
-            start_text,
-            end_text,
-            search_chat_id
-        )
-
-        if not rows:
-            send_message(
-                chat_id,
-                "⭐ در ۷ روز اخیر هنوز ارزی در واچ‌لیست ثبت نشده است."
-            )
-            return "ok"
-
-        latest = {}
-
-        for (
-            symbol,
-            msg_id,
-            source_chat,
-            msg_date,
-            date_text
-        ) in rows:
-
-            if (
-                symbol not in latest
-                or msg_date >= latest[symbol][3]
-            ):
-                latest[symbol] = (
-                    symbol,
-                    msg_id,
-                    source_chat,
-                    msg_date,
-                    date_text
-                )
-
-        buttons = []
-        row = []
-
-        for symbol in latest:
-
-            row.append({
-                "text": f"⭐ {DISPLAY_NAMES.get(symbol, symbol)}",
-                "callback_data":
-                    f"historical_analysis:{latest[symbol][4]}:{symbol}"
-            })
-
-            if len(row) == 2:
-                buttons.append(row)
-                row = []
-
-        if row:
-            buttons.append(row)
-
-        send_message(
-            chat_id,
-            "⭐ واچ‌لیست روی چارت\n"
-            "فقط ارزهایی که با #WATCHLIST علامت خورده‌اند.\n\n"
-            "🔽 ارز موردنظر را انتخاب کنید:",
-            reply_markup={
-                "inline_keyboard": buttons
-            }
-        )
-
-        return "ok"
-
-
-# =====================================================
-# تحلیل‌های دیروز / ۷ روز اخیر
-# =====================================================
-
-    if analysis_request in {
-        "YESTERDAY",
-        "LAST7"
-    }:
-
-        tehran_now = datetime.now(
-            ZoneInfo("Asia/Tehran")
-        )
-
-        today_date = tehran_now.date()
-
-        if analysis_request == "YESTERDAY":
-            start_date = today_date - timedelta(days=1)
-            end_date = start_date
-            title = "📊 تحلیل‌های دیروز روی چارت"
-        else:
-            start_date = today_date - timedelta(days=6)
-            end_date = today_date
-            title = "📊 تحلیل‌های ۷ روز اخیر روی چارت"
-
-        start_text = start_date.strftime("%Y-%m-%d")
-        end_text = end_date.strftime("%Y-%m-%d")
-
-        if chat_type in {
-            "group",
-            "supergroup"
-        }:
-            search_chat_id = chat_id
-        else:
-            search_chat_id = None
-
-        rows = get_analysis_range(
-            start_text,
-            end_text,
-            search_chat_id
-        )
-
-        if not rows:
-
-            send_message(
-                chat_id,
-                "📊 در این بازه هنوز تحلیلی ثبت نشده است."
-            )
-
-            return "ok"
-
-        # از هر ارز فقط آخرین تحلیل موجود در بازه را در منو نشان می‌دهیم.
-        latest = {}
-
-        for (
-            symbol,
-            msg_id,
-            source_chat,
-            msg_date,
-            date_text
-        ) in rows:
-
-            if (
-                symbol not in latest
-                or msg_date >= latest[symbol][3]
-            ):
-                latest[symbol] = (
-                    symbol,
-                    msg_id,
-                    source_chat,
-                    msg_date,
-                    date_text
-                )
-
-        buttons = []
-        row = []
-
-        for symbol in latest:
-
-            row.append({
-                "text": DISPLAY_NAMES.get(
-                    symbol,
-                    symbol
-                ),
-                "callback_data":
-                    f"historical_analysis:{latest[symbol][4]}:{symbol}"
-            })
-
-            if len(row) == 2:
-                buttons.append(row)
-                row = []
-
-        if row:
-            buttons.append(row)
-
-        send_message(
-            chat_id,
-            title + "\n\n🔽 ارز موردنظر را انتخاب کنید:",
-            reply_markup={
-                "inline_keyboard": buttons
-            }
-        )
-
-        return "ok"
 
 
 # =====================================================
@@ -3104,30 +2504,26 @@ def webhook():
 
         else:
 
-            # در چت خصوصی نیز تحلیل جدید باید Reply به آخرین
-            # تحلیل قبلی همان ارز باشد.
+            # در چت خصوصی هم باید زنجیرهٔ Reply بر اساس پیام‌های
+            # کپی‌شده در همان چت ساخته شود.
+            # یعنی اگر این جدیدترین تحلیل است، Reply باید به کپیِ
+            # تحلیل قبلیِ همان ارز در همین چت اشاره کند؛ نه به پیام
+            # اصلی داخل گروه و نه به خودِ پیام جدید.
             reply_to_message_id = None
 
-            # در چت خصوصی، برای Reply کردن تحلیل جدید باید
-            # message_id واقعیِ آخرین تحلیل همان ارز را در همین
-            # چت خصوصی داشته باشیم.
-            #
-            # اینجا دیگر وابسته به source_message_id تحلیل قبلی نیستیم؛
-            # چون ممکن است تحلیل قبلی قبلاً در ربات کپی شده باشد ولی
-            # رکورد source آن با وضعیت فعلی متفاوت باشد.
-            reply_to_message_id = get_latest_analysis_copy_for_symbol(
-                chat_id,
-                symbol
-            )
-
-            # اگر تحلیل قبلی مستقیماً در همین چت ثبت شده باشد،
-            # message_id خودش معتبر است.
-            if reply_to_message_id is None and len(analyses) > 1:
+            if len(analyses) > 1:
                 previous_source_chat = analyses[1][0]
                 previous_source_message = analyses[1][1]
 
-                if previous_source_chat == chat_id:
-                    reply_to_message_id = previous_source_message
+                reply_to_message_id = get_analysis_copy_message_id(
+                    previous_source_chat,
+                    previous_source_message,
+                    chat_id
+                )
+
+                # محافظ ایمنی: هرگز یک پیام را Reply خودش نکن.
+                if reply_to_message_id == source_message_id:
+                    reply_to_message_id = None
 
             copied_message_id = copy_analysis_message(
                 chat_id,
@@ -3137,7 +2533,8 @@ def webhook():
             )
 
             if copied_message_id:
-
+                # message_id واقعیِ کپی را ذخیره می‌کنیم تا تحلیل بعدی
+                # بتواند دقیقاً به همین پیام Reply شود.
                 save_analysis_copy(
                     source_chat_id,
                     source_message_id,
@@ -3145,7 +2542,6 @@ def webhook():
                     copied_message_id,
                     symbol
                 )
-
             else:
 
                 send_message(
@@ -3257,10 +2653,7 @@ def webhook():
                 "• تحلیل XRP\n"
                 "• تحلیل FET\n\n"
                 "برای همه تحلیل‌های امروز:\n"
-                "• تحلیل های امروز\n\n"
-                "برای واچ‌لیست روزهای قبل:\n"
-                "• تحلیل های دیروز\n"
-                "• تحلیل های 7 روز اخیر"
+                "• تحلیل های امروز"
             )
 
             return "ok"
