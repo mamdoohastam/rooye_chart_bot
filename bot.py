@@ -537,7 +537,8 @@ def copy_analysis_message(
     target_chat_id,
     source_chat_id,
     source_message_id,
-    reply_to_message_id=None
+    reply_to_message_id=None,
+    target_message_thread_id=None
 ):
     """Copy an analysis and optionally attach it as a Telegram reply.
 
@@ -551,9 +552,16 @@ def copy_analysis_message(
         "message_id": source_message_id,
     }
 
+    # در Forum/Topics باید مقصد کپی را صراحتاً داخل همان thread قرار دهیم.
+    # این مورد فقط وقتی داده شده باشد به payload اضافه می‌شود؛ بنابراین
+    # رفتار چت خصوصی و گروه‌های معمولی تغییر نمی‌کند.
+    if target_message_thread_id is not None:
+        payload["message_thread_id"] = target_message_thread_id
+
     if reply_to_message_id is not None:
         payload["reply_parameters"] = {
             "message_id": reply_to_message_id,
+            "chat_id": target_chat_id,
             "allow_sending_without_reply": False,
         }
 
@@ -565,6 +573,7 @@ def copy_analysis_message(
         f"target={target_chat_id}",
         f"source={source_chat_id}:{source_message_id}",
         f"reply_to={reply_to_message_id}",
+        f"thread={target_message_thread_id}",
         flush=True,
     )
 
@@ -2647,6 +2656,10 @@ def webhook():
         "date"
     )
 
+    # اگر گروه Forum/Topics باشد، این شناسه مشخص می‌کند پیام دستور
+    # در کدام Topic قرار دارد. برای Reply زنجیره‌ای گروه از آن استفاده می‌کنیم.
+    message_thread_id = message.get("message_thread_id")
+
 
 # =====================================================
 # دستورهای دیتابیس
@@ -3293,6 +3306,9 @@ def webhook():
             "supergroup"
         }:
 
+            # message_thread_id از خود پیام «تحلیل MAGMA» گرفته می‌شود.
+            # لازم نیست برای تحلیل‌های قدیمی schema دیتابیس را تغییر دهیم؛
+            # Telegram مقصد Reply را در همان Topic فعلی قرار می‌دهد.
             reply_to_message_id = None
             previous_source_chat = None
             previous_source_message = None
@@ -3331,6 +3347,7 @@ def webhook():
                 f"latest={source_chat_id}:{source_message_id}",
                 f"previous={previous_source_chat}:{previous_source_message}",
                 f"reply_target={reply_to_message_id}",
+                f"thread={message_thread_id}",
                 flush=True,
             )
 
@@ -3351,7 +3368,8 @@ def webhook():
                     chat_id,
                     source_chat_id,
                     source_message_id,
-                    reply_to_message_id=reply_to_message_id
+                    reply_to_message_id=reply_to_message_id,
+                    target_message_thread_id=message_thread_id
                 )
 
                 if copied_message_id:
@@ -3382,7 +3400,8 @@ def webhook():
                     chat_id,
                     source_chat_id,
                     source_message_id,
-                    reply_to_message_id=None
+                    reply_to_message_id=None,
+                    target_message_thread_id=message_thread_id
                 )
 
                 if copied_message_id:
