@@ -334,8 +334,16 @@ def init_database():
                 target_chat_id BIGINT NOT NULL,
                 copied_message_id BIGINT NOT NULL,
                 symbol TEXT,
+                target_message_thread_id BIGINT,
                 copied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
+            """
+        )
+
+        connection.execute(
+            """
+            ALTER TABLE analysis_copies
+            ADD COLUMN IF NOT EXISTS target_message_thread_id BIGINT
             """
         )
 
@@ -537,13 +545,25 @@ def copy_analysis_message(
     target_chat_id,
     source_chat_id,
     source_message_id,
-    reply_to_message_id=None
+    reply_to_message_id=None,
+    target_message_thread_id=None,
+    return_metadata=False,
 ):
+    """کپی تحلیل با امکان قرار دادن آن در Topic و Reply به پیام قبلی.
+
+    حالت پیش‌فرض دقیقاً همان مقدار قبلی را برمی‌گرداند (فقط message_id)،
+    بنابراین مسیر خصوصی و سایر فراخوانی‌های قدیمی تغییر رفتاری ندارند.
+    در صورت return_metadata=True، علاوه بر message_id، اطلاعات Thread واقعی
+    برگشتی از Telegram نیز در اختیار مسیر گروه قرار می‌گیرد.
+    """
     payload = {
         "chat_id": target_chat_id,
         "from_chat_id": source_chat_id,
         "message_id": source_message_id,
     }
+
+    if target_message_thread_id is not None:
+        payload["message_thread_id"] = target_message_thread_id
 
     if reply_to_message_id is not None:
         payload["reply_parameters"] = {
@@ -563,7 +583,7 @@ def copy_analysis_message(
         print(
             "COPY:",
             response.status_code,
-            response.text[:500]
+            response.text[:700]
         )
 
         if not response.ok:
@@ -578,6 +598,14 @@ def copy_analysis_message(
             print("COPY ERROR: Telegram response has no message_id")
             return None
 
+        metadata = {
+            "message_id": copied_message_id,
+            "message_thread_id": result.get("message_thread_id"),
+        }
+
+        if return_metadata:
+            return metadata
+
         return copied_message_id
 
     except Exception as e:
@@ -591,9 +619,10 @@ def save_analysis_copy(
     source_message_id,
     target_chat_id,
     copied_message_id,
-    symbol=None
+    symbol=None,
+    target_message_thread_id=None,
 ):
-    """شناسه آخرین کپی یک تحلیل را در چت مقصد ثبت می‌کند."""
+    """شناسه کپی و در صورت وجود، Topic مقصد را ثبت می‌کند."""
     try:
         with get_db_connection() as connection:
             connection.execute(
@@ -604,9 +633,10 @@ def save_analysis_copy(
                     source_message_id,
                     target_chat_id,
                     copied_message_id,
-                    symbol
+                    symbol,
+                    target_message_thread_id
                 )
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (
                     source_chat_id,
                     source_message_id,
@@ -615,6 +645,7 @@ def save_analysis_copy(
                 )
                 DO UPDATE SET
                     copied_message_id = EXCLUDED.copied_message_id,
+                    target_message_thread_id = EXCLUDED.target_message_thread_id,
                     copied_at = NOW()
                 """,
                 (
@@ -623,11 +654,45 @@ def save_analysis_copy(
                     target_chat_id,
                     copied_message_id,
                     symbol,
+                    target_message_thread_id,
                 )
             )
             connection.commit()
     except Exception as e:
         print("ANALYSIS COPY SAVE ERROR:", e)
+
+
+def get_analysis_copy_target_thread_id(
+    source_chat_id,
+    source_message_id,
+    target_chat_id,
+    symbol=None,
+):
+    """Thread واقعی پیام کپی‌شده قبلی را برمی‌گرداند."""
+    try:
+        with get_db_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT target_message_thread_id
+                FROM analysis_copies
+                WHERE source_chat_id = %s
+                  AND source_message_id = %s
+                  AND target_chat_id = %s
+                  AND UPPER(TRIM(COALESCE(symbol, ''))) = %s
+                ORDER BY copied_at DESC, id DESC
+                LIMIT 1
+                """,
+                (
+                    source_chat_id,
+                    source_message_id,
+                    target_chat_id,
+                    (symbol or "").strip().upper(),
+                )
+            ).fetchone()
+        return row[0] if row else None
+    except Exception as e:
+        print("ANALYSIS COPY THREAD LOOKUP ERROR:", e)
+        return None
 
 
 def get_latest_analysis_copy_for_symbol(
@@ -2622,6 +2687,13 @@ def webhook():
         "date"
     )
 
+    # در سوپرگروه‌های Forum، این شناسه Topic جاری پیام ورودی است.
+    # برای زنجیره Reply گروه از آن به‌عنوان fallback استفاده می‌کنیم،
+    # مخصوصاً برای رکوردهای قدیمی که Thread در دیتابیس ذخیره نشده‌اند.
+    message_thread_id = message.get(
+        "message_thread_id"
+    )
+
 
 # =====================================================
 # دستورهای دیتابیس
@@ -3269,18 +3341,21 @@ def webhook():
         }:
 
             reply_to_message_id = None
+            reply_thread_id = message_thread_id
 
             if len(analyses) > 1:
                 previous_source_chat = analyses[1][0]
                 previous_source_message = analyses[1][1]
 
-                # در گروه فقط به «کپی واقعی تحلیل قبلی» Reply می‌کنیم.
-                # هرگز از message_id منبع به‌عنوان fallback استفاده نمی‌کنیم؛
-                # چون ممکن است همان پیام فعلی یا پیامی خارج از context مقصد باشد.
-                if not (
+                # هرگز پیام فعلی را به خودش Reply نکن.
+                if (
                     previous_source_chat == source_chat_id
                     and previous_source_message == source_message_id
                 ):
+                    previous_source_chat = None
+                    previous_source_message = None
+
+                if previous_source_chat is not None:
                     reply_to_message_id = get_analysis_copy_message_id(
                         previous_source_chat,
                         previous_source_message,
@@ -3288,66 +3363,116 @@ def webhook():
                         symbol
                     )
 
-            # محافظ مطلق: پیام فعلی تحت هیچ شرایطی Reply target خودش نیست.
+                    stored_thread_id = get_analysis_copy_target_thread_id(
+                        previous_source_chat,
+                        previous_source_message,
+                        chat_id,
+                        symbol
+                    )
+
+                    if stored_thread_id is not None:
+                        reply_thread_id = stored_thread_id
+
+                # اگر تحلیل قبلی مستقیماً در همین گروه ثبت شده باشد، همان
+                # message_id منبع قابل Reply است.
+                if (
+                    reply_to_message_id is None
+                    and previous_source_chat == chat_id
+                ):
+                    reply_to_message_id = previous_source_message
+
+            # در Topic جاری، اگر رکورد قبلی Thread نداشته باشد، Thread پیام
+            # ورودی را نگه می‌داریم. این دقیقاً برای رکوردهای قدیمی مثل 59873
+            # مهم است که قبل از اضافه شدن ستون Thread ذخیره شده‌اند.
+            if reply_to_message_id is not None and reply_thread_id is not None:
+                print(
+                    "GROUP ANALYSIS REPLY TARGET:",
+                    symbol,
+                    "reply_to=",
+                    reply_to_message_id,
+                    "thread=",
+                    reply_thread_id
+                )
+
             if (
-                reply_to_message_id == source_message_id
+                reply_to_message_id is not None
+                and reply_to_message_id == source_message_id
                 and source_chat_id == chat_id
             ):
                 reply_to_message_id = None
 
-            copied_message_id = None
+            copy_result = copy_analysis_message(
+                chat_id,
+                source_chat_id,
+                source_message_id,
+                reply_to_message_id=reply_to_message_id,
+                target_message_thread_id=reply_thread_id,
+                return_metadata=True,
+            )
 
-            if reply_to_message_id is not None:
-                copied_message_id = copy_analysis_message(
+            # اگر Reply به رکورد قدیمی به‌خاطر Thread اشتباه شکست خورد، یک بار
+            # دیگر با Thread پیام ورودی (و بدون Thread ذخیره‌شده قدیمی) امتحان
+            # می‌کنیم؛ اما فقط وقتی Reply target داریم. در صورت شکست، دیگر
+            # تحلیل را بدون Reply مخفیانه ارسال نمی‌کنیم.
+            if (
+                copy_result is None
+                and reply_to_message_id is not None
+                and message_thread_id is not None
+                and reply_thread_id != message_thread_id
+            ):
+                copy_result = copy_analysis_message(
                     chat_id,
                     source_chat_id,
                     source_message_id,
-                    reply_to_message_id=reply_to_message_id
+                    reply_to_message_id=reply_to_message_id,
+                    target_message_thread_id=message_thread_id,
+                    return_metadata=True,
                 )
 
-                # اگر Reply target قدیمی/نامعتبر بود، همان تحلیل را یک بار
-                # بدون Reply کپی می‌کنیم. اینجا دیگر هیچ Reply به خود پیام
-                # جدید یا message_id منبع اتفاق نمی‌افتد.
-                if copied_message_id is None:
-                    print(
-                        "GROUP REPLY FAILED; RETRY WITHOUT REPLY:",
-                        symbol,
-                        "target=",
-                        reply_to_message_id,
-                        "error=",
-                        LAST_COPY_ERROR
-                    )
-                    copied_message_id = copy_analysis_message(
-                        chat_id,
-                        source_chat_id,
-                        source_message_id,
-                        reply_to_message_id=None
-                    )
-
-            else:
-                copied_message_id = copy_analysis_message(
-                    chat_id,
-                    source_chat_id,
-                    source_message_id,
-                    reply_to_message_id=None
-                )
-
-            if copied_message_id:
-                save_analysis_copy(
-                    source_chat_id,
-                    source_message_id,
-                    chat_id,
-                    copied_message_id,
-                    symbol
-                )
-            else:
+            if copy_result is None and reply_to_message_id is not None:
                 send_message(
                     chat_id,
-                    f"📊 آخرین تحلیل {name}\n"
-                    f"🕐 {analysis_time}"
+                    "⚠️ تحلیل پیدا شد، اما Reply به تحلیل قبلی انجام نشد.\n\n"
+                    f"خطای واقعی Telegram:\n{LAST_COPY_ERROR or 'نامشخص'}"
+                )
+                return "ok"
+
+            # اگر تحلیل قبلی نداریم، این اولین تحلیل زنجیره در گروه است.
+            if copy_result is None:
+                copy_result = copy_analysis_message(
+                    chat_id,
+                    source_chat_id,
+                    source_message_id,
+                    reply_to_message_id=None,
+                    target_message_thread_id=message_thread_id,
+                    return_metadata=True,
                 )
 
+            if copy_result is None:
+                send_message(
+                    chat_id,
+                    "❌ ارسال تحلیل انجام نشد.\n\n"
+                    f"خطای واقعی Telegram:\n{LAST_COPY_ERROR or 'نامشخص'}"
+                )
+                return "ok"
 
+            copied_message_id = copy_result["message_id"]
+            actual_thread_id = copy_result.get("message_thread_id")
+
+            save_analysis_copy(
+                source_chat_id,
+                source_message_id,
+                chat_id,
+                copied_message_id,
+                symbol,
+                target_message_thread_id=actual_thread_id,
+            )
+
+            send_analysis_date(
+                chat_id,
+                copied_message_id,
+                analysis_date
+            )
         else:
 
             # چت خصوصی: از جدیدترین رکورد شروع می‌کنیم، اما اگر پیام منبع
