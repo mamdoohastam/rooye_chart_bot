@@ -539,6 +539,12 @@ def copy_analysis_message(
     source_message_id,
     reply_to_message_id=None
 ):
+    """Copy an analysis and optionally attach it as a Telegram reply.
+
+    This function deliberately keeps the real Telegram error in LAST_COPY_ERROR
+    and logs the exact source/target/reply IDs so group-chain failures can be
+    diagnosed without guessing.
+    """
     payload = {
         "chat_id": target_chat_id,
         "from_chat_id": source_chat_id,
@@ -547,11 +553,20 @@ def copy_analysis_message(
 
     if reply_to_message_id is not None:
         payload["reply_parameters"] = {
-            "message_id": reply_to_message_id
+            "message_id": reply_to_message_id,
+            "allow_sending_without_reply": False,
         }
 
     global LAST_COPY_ERROR
     LAST_COPY_ERROR = ""
+
+    print(
+        "COPY REQUEST:",
+        f"target={target_chat_id}",
+        f"source={source_chat_id}:{source_message_id}",
+        f"reply_to={reply_to_message_id}",
+        flush=True,
+    )
 
     try:
         response = requests.post(
@@ -563,26 +578,36 @@ def copy_analysis_message(
         print(
             "COPY:",
             response.status_code,
-            response.text[:500]
+            response.text[:1000],
+            flush=True,
         )
 
         if not response.ok:
-            LAST_COPY_ERROR = response.text[:1000]
+            LAST_COPY_ERROR = response.text[:2000]
             return None
 
         result = response.json().get("result", {}) or {}
         copied_message_id = result.get("message_id")
 
         if copied_message_id is None:
-            LAST_COPY_ERROR = response.text[:1000]
-            print("COPY ERROR: Telegram response has no message_id")
+            LAST_COPY_ERROR = response.text[:2000]
+            print(
+                "COPY ERROR: Telegram response has no message_id",
+                flush=True,
+            )
             return None
 
+        print(
+            "COPY SUCCESS:",
+            f"copied_message_id={copied_message_id}",
+            f"reply_to={reply_to_message_id}",
+            flush=True,
+        )
         return copied_message_id
 
     except Exception as e:
         LAST_COPY_ERROR = str(e)
-        print("COPY ERROR:", e)
+        print("COPY ERROR:", e, flush=True)
         return None
 
 
@@ -3269,6 +3294,8 @@ def webhook():
         }:
 
             reply_to_message_id = None
+            previous_source_chat = None
+            previous_source_message = None
 
             if len(analyses) > 1:
                 previous_source_chat = analyses[1][0]
@@ -3282,28 +3309,41 @@ def webhook():
                     previous_source_chat = None
                     previous_source_message = None
 
-                # message_id پیام اصلیِ قبلی کافی نیست؛ برای Reply باید
-                # شناسه همان پیام در گروه مقصد را داشته باشیم.
-                reply_to_message_id = get_analysis_copy_message_id(
-                    previous_source_chat,
-                    previous_source_message,
-                    chat_id,
-                    symbol
+                if previous_source_chat is not None:
+                    reply_to_message_id = get_analysis_copy_message_id(
+                        previous_source_chat,
+                        previous_source_message,
+                        chat_id,
+                        symbol
+                    )
+
+                    # اگر تحلیل قبلی مستقیماً در همین گروه ثبت شده باشد،
+                    # همان message_id منبع، شناسه معتبر پیام Reply است.
+                    if (
+                        reply_to_message_id is None
+                        and previous_source_chat == chat_id
+                    ):
+                        reply_to_message_id = previous_source_message
+
+            print(
+                "GROUP ANALYSIS CHAIN:",
+                f"symbol={symbol}",
+                f"latest={source_chat_id}:{source_message_id}",
+                f"previous={previous_source_chat}:{previous_source_message}",
+                f"reply_target={reply_to_message_id}",
+                flush=True,
+            )
+
+            # محافظ نهایی: پیام فعلی هرگز نمی‌تواند Reply target خودش باشد.
+            if (
+                reply_to_message_id == source_message_id
+                and source_chat_id == chat_id
+            ):
+                print(
+                    "GROUP ANALYSIS CHAIN: self-reply blocked",
+                    flush=True,
                 )
-
-                # اگر منبع تحلیل خودش همین گروه باشد، message_id منبع
-                # همان message_id معتبر گروه است.
-                if (
-                    reply_to_message_id is None
-                    and previous_source_chat == chat_id
-                ):
-                    reply_to_message_id = previous_source_message
-
-            if reply_to_message_id is not None:
-
-                # محافظ نهایی: پیام فعلی هرگز نمی‌تواند Reply target خودش باشد.
-                if reply_to_message_id == source_message_id and source_chat_id == chat_id:
-                    reply_to_message_id = None
+                reply_to_message_id = None
 
             if reply_to_message_id is not None:
 
@@ -3323,17 +3363,21 @@ def webhook():
                         symbol
                     )
                 else:
+                    # مهم: خطای واقعی Telegram را مخفی نمی‌کنیم.
+                    # در این حالت هیچ کپیِ بدون Reply ایجاد نمی‌کنیم، چون
+                    # هدف این شاخه حفظ زنجیره Reply است.
                     send_message(
                         chat_id,
-                        "⚠️ پیام تحلیل پیدا شد "
-                        "ولی Telegram اجازه کپی "
-                        "آن را نداد."
+                        "⚠️ تحلیل پیدا شد، اما Reply به تحلیل قبلی انجام نشد.\n\n"
+                        f"شناسه تحلیل جدید: {source_message_id}\n"
+                        f"شناسه تحلیل قبلی: {reply_to_message_id}\n"
+                        f"خطای Telegram: {LAST_COPY_ERROR or 'نامشخص'}"
                     )
 
             else:
 
-                # اگر تحلیل قبلی قابل دسترسی نیست، تحلیل فعلی را بدون Reply
-                # کپی می‌کنیم. هرگز تحلیل فعلی را به خودش Reply نمی‌کنیم.
+                # اگر تحلیل قبلی نداریم، تحلیل فعلی را بدون Reply کپی می‌کنیم.
+                # هرگز تحلیل فعلی را به خودش Reply نمی‌کنیم.
                 copied_message_id = copy_analysis_message(
                     chat_id,
                     source_chat_id,
@@ -3352,8 +3396,8 @@ def webhook():
                 else:
                     send_message(
                         chat_id,
-                        f"📊 آخرین تحلیل {name}\n"
-                        f"🕐 {analysis_time}"
+                        "⚠️ تحلیل پیدا شد، اما Telegram اجازه کپی آن را نداد.\n\n"
+                        f"خطای Telegram: {LAST_COPY_ERROR or 'نامشخص'}"
                     )
 
 
