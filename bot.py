@@ -561,7 +561,6 @@ def copy_analysis_message(
     if reply_to_message_id is not None:
         payload["reply_parameters"] = {
             "message_id": reply_to_message_id,
-            "chat_id": target_chat_id,
             "allow_sending_without_reply": False,
         }
 
@@ -3369,7 +3368,7 @@ def webhook():
                     source_chat_id,
                     source_message_id,
                     reply_to_message_id=reply_to_message_id,
-                    target_message_thread_id=message_thread_id
+                    target_message_thread_id=None
                 )
 
                 if copied_message_id:
