@@ -626,19 +626,8 @@ def save_analysis_copy(
                 )
             )
             connection.commit()
-        print(
-            "ANALYSIS COPY SAVED:",
-            source_chat_id,
-            source_message_id,
-            "->",
-            target_chat_id,
-            copied_message_id,
-            symbol
-        )
-        return True
     except Exception as e:
         print("ANALYSIS COPY SAVE ERROR:", e)
-        return False
 
 
 def get_latest_analysis_copy_for_symbol(
@@ -3353,39 +3342,41 @@ def webhook():
                 )
 
                 if existing_current_copy is not None:
-                    # فقط اگر جدیدترین تحلیل از قبل برای همین کاربر کپی شده،
-                    # آن را «ارسال‌شده» حساب می‌کنیم. هرگز به تحلیل قدیمی‌تر
-                    # برنمی‌گردیم.
-                    if candidate_index == 0:
+                    # اگر جدیدترین تحلیل معتبر قبلاً ارسال شده، همان رفتار
+                    # قبلی حفظ می‌شود و به تحلیل قدیمی‌تر برنمی‌گردیم.
+                    if candidate is candidates[0]:
                         already_sent = True
                     break
 
-                # ---------------------------------------------------------
-                # زنجیره خصوصی: فقط به کپی واقعیِ یکی از تحلیل‌های قدیمی‌تر
-                # همین ارز Reply می‌کنیم.
-                #
-                # عمداً دیگر از «آخرین کپی نماد» به‌عنوان fallback استفاده
-                # نمی‌کنیم؛ چون ممکن است مربوط به تحلیل دیگری باشد و زنجیره
-                # را به پیام اشتباه وصل کند.
-                # ---------------------------------------------------------
+                # Reply باید دقیقاً به آخرین کپیِ قبلی همین ارز در همین چت
+                # وصل شود؛ نه به آخرین رکورد تصادفیِ جدول.
                 reply_to_message_id = None
-                reply_source = None
 
                 for previous_candidate in candidates[candidate_index + 1:]:
+                    previous_source_chat = previous_candidate[0]
+                    previous_source_message = previous_candidate[1]
+
                     previous_copy = get_analysis_copy_message_id(
-                        previous_candidate[0],
-                        previous_candidate[1],
+                        previous_source_chat,
+                        previous_source_message,
                         chat_id,
                         symbol
                     )
 
                     if previous_copy is not None:
                         reply_to_message_id = previous_copy
-                        reply_source = (
-                            previous_candidate[0],
-                            previous_candidate[1]
-                        )
                         break
+
+                # اگر تحلیل قبلی مستقیماً در همین چت ثبت شده، همان message_id
+                # منبع قابل استفاده است.
+                if (
+                    reply_to_message_id is None
+                    and candidate_source_chat == chat_id
+                    and len(candidates) > candidate_index + 1
+                ):
+                    previous_candidate = candidates[candidate_index + 1]
+                    if previous_candidate[0] == chat_id:
+                        reply_to_message_id = previous_candidate[1]
 
                 print(
                     "PRIVATE ANALYSIS REPLY TARGET:",
@@ -3394,15 +3385,9 @@ def webhook():
                     candidate_source_chat,
                     candidate_source_message,
                     "reply_to=",
-                    reply_to_message_id,
-                    "reply_source=",
-                    reply_source
+                    reply_to_message_id
                 )
 
-                # اگر هیچ mapping قبلی برای این کاربر وجود ندارد، این
-                # می‌تواند اولین کپی خصوصی او از این ارز باشد؛ بنابراین
-                # تحلیل را بدون Reply می‌فرستیم. مهم: هیچ mapping نامرتبطی
-                # به‌عنوان Reply انتخاب نمی‌کنیم.
                 copied_message_id = copy_analysis_message(
                     chat_id,
                     candidate_source_chat,
@@ -3418,8 +3403,8 @@ def webhook():
                     )
                     break
 
-                # اگر Telegram گفت پیام منبع پیدا نشد، این رکورد احتمالاً
-                # قدیمی یا حذف‌شده است؛ سراغ تحلیل معتبر بعدی برو.
+                # اگر Telegram گفت پیام منبع پیدا نشد، این رکورد احتمالاً قدیمی
+                # یا حذف‌شده است؛ حلقه به تحلیل معتبر بعدی می‌رود.
                 if 'message to copy not found' in (LAST_COPY_ERROR or '').lower():
                     print(
                         "SKIP INVALID SOURCE MESSAGE:",
@@ -3429,7 +3414,7 @@ def webhook():
                     )
                     continue
 
-                # خطاهای دیگر را روی رکوردهای قدیمی پخش نکن؛ همان خطا را
+                # خطاهای دیگر را بی‌جهت روی رکوردهای قدیمی پخش نکن؛ همان خطا را
                 # به کاربر نشان می‌دهیم.
                 break
 
