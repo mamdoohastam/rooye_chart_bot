@@ -831,8 +831,13 @@ def get_analysis_candidates(
             rows = connection.execute(
                 """
                 SELECT chat_id, message_id, message_date
-                FROM analyses
-                WHERE UPPER(TRIM(symbol)) = %s
+                FROM (
+                    SELECT DISTINCT ON (chat_id, message_id)
+                        chat_id, message_id, message_date, id
+                    FROM analyses
+                    WHERE UPPER(TRIM(symbol)) = %s
+                    ORDER BY chat_id, message_id, message_date DESC, id DESC
+                ) AS unique_messages
                 ORDER BY message_date DESC, id DESC
                 LIMIT %s
                 """, (symbol, limit)
@@ -841,9 +846,14 @@ def get_analysis_candidates(
             rows = connection.execute(
                 """
                 SELECT chat_id, message_id, message_date
-                FROM analyses
-                WHERE chat_id = %s
-                  AND UPPER(TRIM(symbol)) = %s
+                FROM (
+                    SELECT DISTINCT ON (message_id)
+                        chat_id, message_id, message_date, id
+                    FROM analyses
+                    WHERE chat_id = %s
+                      AND UPPER(TRIM(symbol)) = %s
+                    ORDER BY message_id, message_date DESC, id DESC
+                ) AS unique_messages
                 ORDER BY message_date DESC, id DESC
                 LIMIT %s
                 """, (chat_id, symbol, limit)
@@ -863,12 +873,14 @@ def get_latest_two_analysis_info(
         if chat_id is None:
             rows = connection.execute(
                 """
-                SELECT
-                    chat_id,
-                    message_id,
-                    message_date
-                FROM analyses
-                WHERE UPPER(TRIM(symbol)) = %s
+                SELECT chat_id, message_id, message_date
+                FROM (
+                    SELECT DISTINCT ON (chat_id, message_id)
+                        chat_id, message_id, message_date, id
+                    FROM analyses
+                    WHERE UPPER(TRIM(symbol)) = %s
+                    ORDER BY chat_id, message_id, message_date DESC, id DESC
+                ) AS unique_messages
                 ORDER BY message_date DESC, id DESC
                 LIMIT 2
                 """,
@@ -878,13 +890,15 @@ def get_latest_two_analysis_info(
         else:
             rows = connection.execute(
                 """
-                SELECT
-                    chat_id,
-                    message_id,
-                    message_date
-                FROM analyses
-                WHERE chat_id = %s
-                  AND UPPER(TRIM(symbol)) = %s
+                SELECT chat_id, message_id, message_date
+                FROM (
+                    SELECT DISTINCT ON (message_id)
+                        chat_id, message_id, message_date, id
+                    FROM analyses
+                    WHERE chat_id = %s
+                      AND UPPER(TRIM(symbol)) = %s
+                    ORDER BY message_id, message_date DESC, id DESC
+                ) AS unique_messages
                 ORDER BY message_date DESC, id DESC
                 LIMIT 2
                 """,
@@ -3260,6 +3274,14 @@ def webhook():
                 previous_source_chat = analyses[1][0]
                 previous_source_message = analyses[1][1]
 
+                # هرگز پیام فعلی را به خودش Reply نکن.
+                if (
+                    previous_source_chat == source_chat_id
+                    and previous_source_message == source_message_id
+                ):
+                    previous_source_chat = None
+                    previous_source_message = None
+
                 # message_id پیام اصلیِ قبلی کافی نیست؛ برای Reply باید
                 # شناسه همان پیام در گروه مقصد را داشته باشیم.
                 reply_to_message_id = get_analysis_copy_message_id(
@@ -3276,6 +3298,12 @@ def webhook():
                     and previous_source_chat == chat_id
                 ):
                     reply_to_message_id = previous_source_message
+
+            if reply_to_message_id is not None:
+
+                # محافظ نهایی: پیام فعلی هرگز نمی‌تواند Reply target خودش باشد.
+                if reply_to_message_id == source_message_id and source_chat_id == chat_id:
+                    reply_to_message_id = None
 
             if reply_to_message_id is not None:
 
@@ -3304,19 +3332,29 @@ def webhook():
 
             else:
 
-                # اگر هنوز شناسه پیام قبلی در گروه را نداریم، رفتار قدیمی
-                # حفظ می‌شود. این حالت برای تحلیل‌های قدیمیِ قبل از ایجاد
-                # جدول analysis_copies هم ممکن است رخ دهد.
-                send_message(
+                # اگر تحلیل قبلی قابل دسترسی نیست، تحلیل فعلی را بدون Reply
+                # کپی می‌کنیم. هرگز تحلیل فعلی را به خودش Reply نمی‌کنیم.
+                copied_message_id = copy_analysis_message(
                     chat_id,
-                    f"📊 آخرین تحلیل {name}\n"
-                    f"🕐 {analysis_time}",
-                    reply_to_message_id=(
-                        source_message_id
-                        if source_chat_id == chat_id
-                        else None
-                    )
+                    source_chat_id,
+                    source_message_id,
+                    reply_to_message_id=None
                 )
+
+                if copied_message_id:
+                    save_analysis_copy(
+                        source_chat_id,
+                        source_message_id,
+                        chat_id,
+                        copied_message_id,
+                        symbol
+                    )
+                else:
+                    send_message(
+                        chat_id,
+                        f"📊 آخرین تحلیل {name}\n"
+                        f"🕐 {analysis_time}"
+                    )
 
 
         else:
