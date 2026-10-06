@@ -3061,6 +3061,12 @@ def webhook():
 
     if "photo" in message:
 
+        # Telegram automatically mirrors channel posts back into the linked
+        # Discussion group. These are not new native analyses and must not
+        # be saved as separate analysis records.
+        if message.get("is_automatic_forward"):
+            return "ok"
+
         # DIAGNOSTIC ONLY: print the exact Telegram message metadata.
         # No behavior is changed by this logging.
         print("=== PHOTO MESSAGE DIAGNOSTIC START ===")
