@@ -3524,6 +3524,19 @@ def webhook():
             ):
                 reply_to_message_id = None
 
+            # ===== DIAGNOSTIC ONLY: هیچ رفتار ربات را تغییر نمی‌دهد =====
+            print("========== GROUP REPLY DEBUG ==========")
+            print("SYMBOL:", symbol)
+            print("CURRENT CHAT ID:", chat_id)
+            print("SOURCE CHAT ID:", source_chat_id)
+            print("SOURCE MESSAGE ID:", source_message_id)
+            print("PREVIOUS SOURCE CHAT ID:", previous_source_chat if len(analyses) > 1 else None)
+            print("PREVIOUS SOURCE MESSAGE ID:", previous_source_message if len(analyses) > 1 else None)
+            print("REPLY TO MESSAGE ID:", reply_to_message_id)
+            print("INCOMING MESSAGE THREAD ID:", message_thread_id)
+            print("TARGET MESSAGE THREAD ID:", reply_thread_id)
+            print("========================================")
+
             copy_result = copy_analysis_message(
                 chat_id,
                 source_chat_id,
@@ -3551,6 +3564,9 @@ def webhook():
                     target_message_thread_id=message_thread_id,
                     return_metadata=True,
                 )
+
+            print("GROUP COPY RESULT:", copy_result)
+            print("GROUP COPY LAST ERROR:", LAST_COPY_ERROR)
 
             if copy_result is None and reply_to_message_id is not None:
                 send_message(
