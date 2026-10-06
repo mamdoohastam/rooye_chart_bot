@@ -3061,11 +3061,19 @@ def webhook():
 
     if "photo" in message:
 
-        # پیام‌هایی که Telegram از کانال به Discussion برمی‌گرداند
-        # automatic forward هستند و نباید به‌عنوان تحلیل مستقل ثبت شوند.
-        # تحلیل اصلی که مستقیماً در گروه ارسال شده، همچنان بدون تغییر ثبت می‌شود.
-        if message.get("is_automatic_forward"):
-            return "ok"
+        # DIAGNOSTIC ONLY: print the exact Telegram message metadata.
+        # No behavior is changed by this logging.
+        print("=== PHOTO MESSAGE DIAGNOSTIC START ===")
+        print("MESSAGE_ID:", message.get("message_id"))
+        print("CHAT:", message.get("chat"))
+        print("FROM:", message.get("from"))
+        print("FORWARD_DATE:", message.get("forward_date"))
+        print("FORWARD_ORIGIN:", message.get("forward_origin"))
+        print("IS_AUTOMATIC_FORWARD:", message.get("is_automatic_forward"))
+        print("IS_TOPIC_MESSAGE:", message.get("is_topic_message"))
+        print("REPLY_TO:", message.get("reply_to_message"))
+        print("CAPTION:", message.get("caption"))
+        print("=== PHOTO MESSAGE DIAGNOSTIC END ===")
 
         caption = message.get(
             "caption",
