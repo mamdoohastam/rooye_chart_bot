@@ -3065,6 +3065,7 @@ def webhook():
         # Discussion group. These are not new native analyses and must not
         # be saved as separate analysis records.
         if message.get("is_automatic_forward"):
+            print("AUTO_FORWARD_IGNORED: message=", message.get("message_id"), flush=True)
             return "ok"
 
         # DIAGNOSTIC ONLY: print the exact Telegram message metadata.
@@ -3948,6 +3949,8 @@ def webhook():
 # =========================================================
 # اجرای Flask
 # =========================================================
+
+print("ROOYE FIX V23 - AUTO FORWARD PROTECTION ACTIVE", flush=True)
 
 if __name__ == "__main__":
 
