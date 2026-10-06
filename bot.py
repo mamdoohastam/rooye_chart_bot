@@ -11,6 +11,26 @@ app = Flask(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
+# =========================================================
+# حالت تست موقت V25
+# فقط برای یک چت خصوصی مشخص می‌توان تکرار ارسال همان تحلیل را تست کرد.
+# TEST_MODE را در محیط اجرا True کنید و TEST_CHAT_ID را با chat_id خودتان پر کنید.
+# در حالت عادی TEST_MODE باید False باشد.
+# =========================================================
+TEST_MODE = os.environ.get("TEST_MODE", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+
+try:
+    TEST_CHAT_ID = int(os.environ.get("TEST_CHAT_ID", "0") or 0)
+except (TypeError, ValueError):
+    TEST_CHAT_ID = 0
+
+
+def is_test_chat(chat_id):
+    return TEST_MODE and TEST_CHAT_ID != 0 and chat_id == TEST_CHAT_ID
+
+
 CHANNEL_URL = "https://t.me/rooye_chart"
 GROUP_URL = "https://t.me/rooye_chart_gap"
 
@@ -399,6 +419,14 @@ def init_database():
 
 
 init_database()
+
+print(
+    "ROOYE V25 TEST MODE:",
+    "ACTIVE" if TEST_MODE else "OFF",
+    "TEST_CHAT_ID=",
+    TEST_CHAT_ID,
+    flush=True,
+)
 
 
 # =========================================================
@@ -3655,11 +3683,23 @@ def webhook():
                 )
 
                 if existing_current_copy is not None:
-                    # اگر جدیدترین تحلیل معتبر قبلاً ارسال شده، همان رفتار
-                    # قبلی حفظ می‌شود و به تحلیل قدیمی‌تر برنمی‌گردیم.
-                    if candidate is candidates[0]:
+                    # در حالت تست، برای چت تست اجازه می‌دهیم همان تحلیل
+                    # چند بار دوباره ارسال شود. در حالت عادی رفتار V25
+                    # بدون هیچ تغییری حفظ می‌شود.
+                    if candidate is candidates[0] and not is_test_chat(chat_id):
                         already_sent = True
-                    break
+                    elif candidate is candidates[0] and is_test_chat(chat_id):
+                        print(
+                            "TEST MODE: bypass already-sent for",
+                            symbol,
+                            "chat=",
+                            chat_id
+                        )
+                    else:
+                        break
+
+                    if candidate is not candidates[0]:
+                        break
 
                 # Reply باید به «تحلیل قبلیِ واقعی» همین ارز وصل شود.
                 # مهم: دیگر شرط نمی‌گذاریم که mapping قبلی حتماً از قبل
@@ -3774,13 +3814,25 @@ def webhook():
 
             if copied_message_id and selected_source:
                 selected_chat, selected_message, selected_date = selected_source
-                save_analysis_copy(
-                    selected_chat,
-                    selected_message,
-                    chat_id,
-                    copied_message_id,
-                    symbol
-                )
+
+                # در حالت تست mapping جدید را ذخیره نمی‌کنیم تا درخواست بعدی
+                # دوباره بتواند همان تحلیل را تست کند و دیتابیس تولیدی آلوده نشود.
+                if not is_test_chat(chat_id):
+                    save_analysis_copy(
+                        selected_chat,
+                        selected_message,
+                        chat_id,
+                        copied_message_id,
+                        symbol
+                    )
+                else:
+                    print(
+                        "TEST MODE: selected copy NOT saved",
+                        symbol,
+                        "chat=",
+                        chat_id
+                    )
+
                 send_analysis_date(
                     chat_id,
                     copied_message_id,
