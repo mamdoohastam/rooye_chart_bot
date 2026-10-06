@@ -3061,6 +3061,12 @@ def webhook():
 
     if "photo" in message:
 
+        # پیام‌هایی که Telegram از کانال به Discussion برمی‌گرداند
+        # automatic forward هستند و نباید به‌عنوان تحلیل مستقل ثبت شوند.
+        # تحلیل اصلی که مستقیماً در گروه ارسال شده، همچنان بدون تغییر ثبت می‌شود.
+        if message.get("is_automatic_forward"):
+            return "ok"
+
         caption = message.get(
             "caption",
             ""
