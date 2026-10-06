@@ -427,46 +427,56 @@ with get_db_connection() as connection:
             chat_id BIGINT NOT NULL,
             symbol TEXT NOT NULL,
             message_id BIGINT NOT NULL,
+            date_message_id BIGINT,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             PRIMARY KEY (chat_id, symbol)
         )
         """
     )
+    connection.execute(
+        "ALTER TABLE v26_test_navigation_sessions ADD COLUMN IF NOT EXISTS date_message_id BIGINT"
+    )
     connection.commit()
 
 
-def get_test_navigation_message(chat_id, symbol):
+def get_test_navigation_session(chat_id, symbol):
     try:
         with get_db_connection() as connection:
             row = connection.execute(
                 """
-                SELECT message_id
+                SELECT message_id, date_message_id
                 FROM v26_test_navigation_sessions
                 WHERE chat_id = %s AND symbol = %s
                 LIMIT 1
                 """,
                 (chat_id, symbol.upper().strip())
             ).fetchone()
-        return row[0] if row else None
+        return (row[0], row[1]) if row else None
     except Exception as e:
         print("V26 TEST SESSION LOOKUP ERROR:", e)
         return None
 
 
-def save_test_navigation_message(chat_id, symbol, message_id):
+def get_test_navigation_message(chat_id, symbol):
+    session = get_test_navigation_session(chat_id, symbol)
+    return session[0] if session else None
+
+
+def save_test_navigation_message(chat_id, symbol, message_id, date_message_id=None):
     try:
         with get_db_connection() as connection:
             connection.execute(
                 """
                 INSERT INTO v26_test_navigation_sessions
-                (chat_id, symbol, message_id)
-                VALUES (%s, %s, %s)
+                (chat_id, symbol, message_id, date_message_id)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (chat_id, symbol)
                 DO UPDATE SET
                     message_id = EXCLUDED.message_id,
+                    date_message_id = EXCLUDED.date_message_id,
                     updated_at = NOW()
                 """,
-                (chat_id, symbol.upper().strip(), message_id)
+                (chat_id, symbol.upper().strip(), message_id, date_message_id)
             )
             connection.commit()
     except Exception as e:
@@ -556,10 +566,11 @@ def format_jalali_date(timestamp):
 
 
 def send_analysis_date(chat_id, copied_message_id, timestamp):
-    """تاریخ شمسی تحلیل را بلافاصله زیر/در Reply به خود تحلیل می‌فرستد."""
+    """تاریخ و ساعت تحلیل را بلافاصله به‌صورت Reply زیر تحلیل می‌فرستد."""
+    dt = datetime.fromtimestamp(timestamp, tz=ZoneInfo("Asia/Tehran"))
     return send_message(
         chat_id,
-        f"📅 تاریخ تحلیل: {format_jalali_date(timestamp)}",
+        f"📅 تاریخ تحلیل: {format_jalali_date(timestamp)} | 🕐 ساعت: {dt.strftime('%H:%M')}",
         reply_to_message_id=copied_message_id,
     )
 
@@ -2560,12 +2571,28 @@ def webhook():
                 answer_callback(callback_id, "❌ نمایش تحلیل انجام نشد.")
                 return "ok"
 
-            # ابتدا پیام جدید با دکمه آماده شد؛ حالا پیام قبلی را حذف می‌کنیم
-            # تا در چت فقط یک تحلیل ناوبری باقی بماند. اگر حذف شکست خورد،
-            # پیام جدید هم حذف می‌شود تا دو پیام ایجاد نشود.
-            if old_message_id is not None and not delete_message(
-                callback_chat_id, old_message_id
-            ):
+            target_timestamp = target[2]
+            date_result = send_analysis_date(
+                callback_chat_id,
+                new_message_id,
+                target_timestamp,
+            )
+            new_date_message_id = None
+            if isinstance(date_result, dict):
+                new_date_message_id = date_result.get("message_id")
+
+            # ابتدا پیام‌های جدید آماده شدند؛ حالا پیام قبلی و تاریخ قبلی را پاک می‌کنیم.
+            old_session = get_test_navigation_session(callback_chat_id, symbol)
+            old_date_message_id = old_session[1] if old_session else None
+
+            delete_ok = True
+            if old_message_id is not None:
+                delete_ok = delete_message(callback_chat_id, old_message_id)
+            if old_date_message_id is not None:
+                delete_message(callback_chat_id, old_date_message_id)
+
+            if not delete_ok:
+                delete_message(callback_chat_id, new_date_message_id) if new_date_message_id else None
                 delete_message(callback_chat_id, new_message_id)
                 answer_callback(callback_id, "⚠️ جابه‌جایی تحلیل انجام نشد.")
                 return "ok"
@@ -2575,6 +2602,7 @@ def webhook():
                     callback_chat_id,
                     symbol,
                     new_message_id,
+                    new_date_message_id,
                 )
 
             return "ok"
@@ -3982,9 +4010,13 @@ def webhook():
             # اگر در تست قبلاً یک پیام ناوبری برای همین ارز داریم، آن را
             # حذف می‌کنیم تا درخواست مجدد باعث تجمع پیام‌ها نشود.
             if is_test_chat(chat_id):
-                old_test_message = get_test_navigation_message(chat_id, symbol)
-                if old_test_message is not None:
-                    delete_message(chat_id, old_test_message)
+                old_session = get_test_navigation_session(chat_id, symbol)
+                if old_session:
+                    old_test_message, old_date_message = old_session
+                    if old_test_message is not None:
+                        delete_message(chat_id, old_test_message)
+                    if old_date_message is not None:
+                        delete_message(chat_id, old_date_message)
                     clear_test_navigation_message(chat_id, symbol)
 
             copied_message_id = send_analysis_navigation_copy(
@@ -4004,11 +4036,19 @@ def webhook():
                 )
                 return "ok"
 
+            date_result = send_analysis_date(
+                chat_id,
+                copied_message_id,
+                latest[2],
+            )
+            date_message_id = date_result.get("message_id") if isinstance(date_result, dict) else None
+
             if is_test_chat(chat_id):
                 save_test_navigation_message(
                     chat_id,
                     symbol,
                     copied_message_id,
+                    date_message_id,
                 )
 
             # در V26 خصوصی mapping تولیدی V25 را دستکاری نمی‌کنیم؛
