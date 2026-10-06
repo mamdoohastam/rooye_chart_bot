@@ -976,6 +976,63 @@ def get_latest_two_analysis_info(
     return rows
 
 
+def get_analysis_chain_diagnostic(symbol, target_chat_id=None):
+    """اطلاعات تشخیصی زنجیره تحلیل و mapping کپی‌ها را بدون تغییر داده‌ها برمی‌گرداند."""
+    symbol = (symbol or "").strip().upper()
+
+    with get_db_connection() as connection:
+        analyses_rows = connection.execute(
+            """
+            SELECT chat_id, message_id, message_date, id
+            FROM analyses
+            WHERE UPPER(TRIM(symbol)) = %s
+            ORDER BY message_date DESC, id DESC
+            LIMIT 30
+            """,
+            (symbol,)
+        ).fetchall()
+
+        if target_chat_id is None:
+            copies_rows = connection.execute(
+                """
+                SELECT
+                    source_chat_id,
+                    source_message_id,
+                    target_chat_id,
+                    copied_message_id,
+                    symbol,
+                    target_message_thread_id,
+                    copied_at
+                FROM analysis_copies
+                WHERE UPPER(TRIM(COALESCE(symbol, ''))) = %s
+                ORDER BY copied_at DESC, id DESC
+                LIMIT 50
+                """,
+                (symbol,)
+            ).fetchall()
+        else:
+            copies_rows = connection.execute(
+                """
+                SELECT
+                    source_chat_id,
+                    source_message_id,
+                    target_chat_id,
+                    copied_message_id,
+                    symbol,
+                    target_message_thread_id,
+                    copied_at
+                FROM analysis_copies
+                WHERE target_chat_id = %s
+                  AND UPPER(TRIM(COALESCE(symbol, ''))) = %s
+                ORDER BY copied_at DESC, id DESC
+                LIMIT 50
+                """,
+                (target_chat_id, symbol)
+            ).fetchall()
+
+    return analyses_rows, copies_rows
+
+
 # =========================================================
 # تحلیل‌های امروز
 # =========================================================
@@ -2929,6 +2986,72 @@ def webhook():
             reply
         )
 
+        return "ok"
+
+
+    if (
+        chat_type == "private"
+        and text_for_command.startswith("/dbchain")
+    ):
+        parts = text_for_command.split(maxsplit=1)
+
+        if len(parts) != 2:
+            send_message(
+                chat_id,
+                "مثال: /dbchain SIREN"
+            )
+            return "ok"
+
+        symbol = parts[1].strip().upper()
+        analyses_rows, copies_rows = get_analysis_chain_diagnostic(
+            symbol,
+            target_chat_id=None
+        )
+
+        if not analyses_rows:
+            send_message(
+                chat_id,
+                f"🔎 برای {symbol} هیچ رکوردی در analyses پیدا نشد."
+            )
+            return "ok"
+
+        reply = f"🔎 تشخیص زنجیره {symbol}\n\n"
+        reply += "📌 analyses (منبع‌ها):\n"
+
+        for db_chat_id, db_message_id, db_message_date, db_id in analyses_rows:
+            reply += (
+                f"• chat={db_chat_id} | message={db_message_id}\n"
+                f"  date={db_message_date} | db_id={db_id}\n"
+            )
+
+        reply += "\n🔗 analysis_copies:\n"
+
+        if not copies_rows:
+            reply += "هیچ mapping کپی برای این ارز پیدا نشد.\n"
+        else:
+            for (
+                source_chat_id,
+                source_message_id,
+                target_chat_id,
+                copied_message_id,
+                copy_symbol,
+                target_thread_id,
+                copied_at,
+            ) in copies_rows:
+                reply += (
+                    f"• source={source_chat_id}:{source_message_id}\n"
+                    f"  target={target_chat_id}:{copied_message_id}\n"
+                    f"  thread={target_thread_id}\n"
+                    f"  copied_at={copied_at}\n"
+                )
+
+        reply += (
+            "\n⚠️ نکته: این گزارش فقط دیتابیس را بررسی می‌کند؛ "
+            "در جدول analyses متن/کپشن منبع ذخیره نشده، بنابراین از این خروجی "
+            "به‌تنهایی نمی‌توان تشخیص داد یک تحلیل قدیمی @rooye_chart داشته یا نه."
+        )
+
+        send_message(chat_id, reply)
         return "ok"
 
 
