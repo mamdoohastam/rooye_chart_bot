@@ -3065,7 +3065,6 @@ def webhook():
         # Discussion group. These are not new native analyses and must not
         # be saved as separate analysis records.
         if message.get("is_automatic_forward"):
-            print("AUTO_FORWARD_IGNORED: message=", message.get("message_id"), flush=True)
             return "ok"
 
         # DIAGNOSTIC ONLY: print the exact Telegram message metadata.
@@ -3665,6 +3664,7 @@ def webhook():
                 # Reply باید دقیقاً به آخرین کپیِ قبلی همین ارز در همین چت
                 # وصل شود؛ نه به آخرین رکورد تصادفیِ جدول.
                 reply_to_message_id = None
+                missing_previous_candidate = None
 
                 for previous_candidate in candidates[candidate_index + 1:]:
                     previous_source_chat = previous_candidate[0]
@@ -3680,6 +3680,57 @@ def webhook():
                     if previous_copy is not None:
                         reply_to_message_id = previous_copy
                         break
+
+                    # اگر کاربر قبلاً برای همین ارز حداقل یک کپی خصوصی داشته
+                    # ولی mapping تحلیل قبلی به‌علت migration قدیمی از بین
+                    # رفته، این تحلیل قبلی را یک بار بازسازی می‌کنیم.
+                    # این کار فقط برای کاربری انجام می‌شود که قبلاً همین ارز
+                    # را دریافت کرده است؛ بنابراین اولین درخواست یک ارز
+                    # همچنان فقط جدیدترین تحلیل را می‌گیرد.
+                    if missing_previous_candidate is None:
+                        missing_previous_candidate = previous_candidate
+
+                if (
+                    reply_to_message_id is None
+                    and missing_previous_candidate is not None
+                    and get_latest_analysis_copy_for_symbol(
+                        chat_id,
+                        symbol
+                    ) is not None
+                ):
+                    repair_source_chat = missing_previous_candidate[0]
+                    repair_source_message = missing_previous_candidate[1]
+                    repair_date = missing_previous_candidate[2]
+
+                    print(
+                        "PRIVATE CHAIN REPAIR:",
+                        symbol,
+                        "source=",
+                        repair_source_chat,
+                        repair_source_message
+                    )
+
+                    repaired_message_id = copy_analysis_message(
+                        chat_id,
+                        repair_source_chat,
+                        repair_source_message,
+                        reply_to_message_id=None
+                    )
+
+                    if repaired_message_id is not None:
+                        save_analysis_copy(
+                            repair_source_chat,
+                            repair_source_message,
+                            chat_id,
+                            repaired_message_id,
+                            symbol
+                        )
+                        send_analysis_date(
+                            chat_id,
+                            repaired_message_id,
+                            repair_date
+                        )
+                        reply_to_message_id = repaired_message_id
 
                 # اگر تحلیل قبلی مستقیماً در همین چت ثبت شده، همان message_id
                 # منبع قابل استفاده است.
@@ -3950,9 +4001,9 @@ def webhook():
 # اجرای Flask
 # =========================================================
 
-print("ROOYE FIX V23 - AUTO FORWARD PROTECTION ACTIVE", flush=True)
-
 if __name__ == "__main__":
+
+    print("ROOYE FIX V24 - PRIVATE CHAIN REPAIR ACTIVE")
 
     app.run(
         host="0.0.0.0",
