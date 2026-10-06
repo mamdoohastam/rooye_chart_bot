@@ -418,6 +418,73 @@ def init_database():
         connection.commit()
 
 
+# V26 test-only session: آخرین پیام ناوبری هر ارز در چت تست.
+# این جدول فقط برای نسخه آزمایشی است و به جدول analyses دست نمی‌زند.
+with get_db_connection() as connection:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS v26_test_navigation_sessions (
+            chat_id BIGINT NOT NULL,
+            symbol TEXT NOT NULL,
+            message_id BIGINT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (chat_id, symbol)
+        )
+        """
+    )
+    connection.commit()
+
+
+def get_test_navigation_message(chat_id, symbol):
+    try:
+        with get_db_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT message_id
+                FROM v26_test_navigation_sessions
+                WHERE chat_id = %s AND symbol = %s
+                LIMIT 1
+                """,
+                (chat_id, symbol.upper().strip())
+            ).fetchone()
+        return row[0] if row else None
+    except Exception as e:
+        print("V26 TEST SESSION LOOKUP ERROR:", e)
+        return None
+
+
+def save_test_navigation_message(chat_id, symbol, message_id):
+    try:
+        with get_db_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO v26_test_navigation_sessions
+                (chat_id, symbol, message_id)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (chat_id, symbol)
+                DO UPDATE SET
+                    message_id = EXCLUDED.message_id,
+                    updated_at = NOW()
+                """,
+                (chat_id, symbol.upper().strip(), message_id)
+            )
+            connection.commit()
+    except Exception as e:
+        print("V26 TEST SESSION SAVE ERROR:", e)
+
+
+def clear_test_navigation_message(chat_id, symbol):
+    try:
+        with get_db_connection() as connection:
+            connection.execute(
+                "DELETE FROM v26_test_navigation_sessions WHERE chat_id = %s AND symbol = %s",
+                (chat_id, symbol.upper().strip())
+            )
+            connection.commit()
+    except Exception as e:
+        print("V26 TEST SESSION CLEAR ERROR:", e)
+
+
 init_database()
 
 print(
@@ -2250,6 +2317,147 @@ def get_symbol_db_status(symbol):
     return rows
 
 
+
+# =========================================================
+# V26 - ناوبری تحلیل‌ها با دکمه‌های Inline
+# =========================================================
+
+def analysis_navigation_keyboard(symbol, current_source_chat, current_source_message, has_previous, has_newer):
+    """دکمه‌های حرکت بین تحلیل‌های یک ارز."""
+    buttons = []
+
+    row = []
+
+    if has_previous:
+        row.append({
+            "text": "⬅️ تحلیل قبلی",
+            "callback_data": (
+                f"nav_prev:{symbol}:"
+                f"{current_source_chat}:{current_source_message}"
+            )
+        })
+
+    if has_newer:
+        row.append({
+            "text": "➡️ تحلیل جدیدتر",
+            "callback_data": (
+                f"nav_next:{symbol}:"
+                f"{current_source_chat}:{current_source_message}"
+            )
+        })
+
+    if row:
+        buttons.append(row)
+
+    return {"inline_keyboard": buttons}
+
+
+def edit_message_reply_markup(chat_id, message_id, reply_markup):
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageReplyMarkup",
+            json={
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "reply_markup": reply_markup,
+            },
+            timeout=10,
+        )
+        print("EDIT MARKUP:", response.status_code, response.text[:500])
+        return response.ok
+    except Exception as e:
+        print("EDIT MARKUP ERROR:", e)
+        return False
+
+
+def delete_message(chat_id, message_id):
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
+            json={
+                "chat_id": chat_id,
+                "message_id": message_id,
+            },
+            timeout=10,
+        )
+        print("DELETE:", response.status_code, response.text[:500])
+        return response.ok
+    except Exception as e:
+        print("DELETE ERROR:", e)
+        return False
+
+
+def send_analysis_navigation_copy(
+    chat_id,
+    source_chat_id,
+    source_message_id,
+    symbol,
+    has_previous,
+    has_newer,
+):
+    """تحلیل را دقیقاً با copyMessage می‌آورد تا عکس و caption اصلی حفظ شود،
+    سپس روی همان پیام دکمه‌های ناوبری می‌گذارد."""
+    copied_message_id = copy_analysis_message(
+        chat_id,
+        source_chat_id,
+        source_message_id,
+        reply_to_message_id=None,
+    )
+
+    if copied_message_id is None:
+        return None
+
+    keyboard = analysis_navigation_keyboard(
+        symbol,
+        source_chat_id,
+        source_message_id,
+        has_previous,
+        has_newer,
+    )
+
+    if not edit_message_reply_markup(
+        chat_id,
+        copied_message_id,
+        keyboard,
+    ):
+        # اگر افزودن دکمه شکست خورد، پیام تحلیل را حذف می‌کنیم تا یک
+        # پیام بدون کنترل ناوبری به کاربر تحویل داده نشود.
+        delete_message(chat_id, copied_message_id)
+        return None
+
+    return copied_message_id
+
+
+def get_navigation_target(symbol, current_source_chat, current_source_message, direction):
+    """تحلیل قبلی/جدیدتر را نسبت به پیام فعلی پیدا می‌کند."""
+    candidates = get_analysis_candidates(symbol, None, 100)
+
+    current_index = None
+    for i, candidate in enumerate(candidates):
+        if (
+            candidate[0] == current_source_chat
+            and candidate[1] == current_source_message
+        ):
+            current_index = i
+            break
+
+    if current_index is None:
+        return None, None, False, False
+
+    if direction == "prev":
+        target_index = current_index + 1
+    else:
+        target_index = current_index - 1
+
+    if target_index < 0 or target_index >= len(candidates):
+        return None, None, False, False
+
+    target = candidates[target_index]
+    has_previous = target_index + 1 < len(candidates)
+    has_newer = target_index > 0
+
+    return target, target_index, has_previous, has_newer
+
 # =========================================================
 # Webhook
 # =========================================================
@@ -2284,6 +2492,92 @@ def webhook():
             "data",
             ""
         )
+
+        # =====================================================
+        # V26: ناوبری تحلیل قبلی/جدیدتر در همان پیام
+        # =====================================================
+        if callback_data.startswith(("nav_prev:", "nav_next:")):
+            parts = callback_data.split(":", 3)
+
+            if len(parts) != 4:
+                answer_callback(callback_id, "⚠️ اطلاعات ناوبری نامعتبر است.")
+                return "ok"
+
+            direction = "prev" if parts[0] == "nav_prev" else "next"
+            symbol = parts[1].upper().strip()
+
+            try:
+                current_source_chat = int(parts[2])
+                current_source_message = int(parts[3])
+            except (TypeError, ValueError):
+                answer_callback(callback_id, "⚠️ شناسه تحلیل نامعتبر است.")
+                return "ok"
+
+            callback_message = callback.get("message", {}) or {}
+            callback_chat = callback_message.get("chat", {}) or {}
+            callback_chat_id = callback_chat.get("id")
+
+            if callback_chat_id is None:
+                answer_callback(callback_id, "⚠️ خطا در تشخیص چت.")
+                return "ok"
+
+            # V26 ناوبری خصوصی است؛ گروه فعلاً همان رفتار V25 را نگه می‌دارد.
+            if callback_chat.get("type") != "private":
+                answer_callback(callback_id, "ℹ️ این ناوبری فعلاً فقط در چت خصوصی فعال است.")
+                return "ok"
+
+            target, target_index, has_previous, has_newer = get_navigation_target(
+                symbol,
+                current_source_chat,
+                current_source_message,
+                direction,
+            )
+
+            if target is None:
+                answer_callback(
+                    callback_id,
+                    "ℹ️ تحلیل دیگری برای این ارز وجود ندارد."
+                )
+                return "ok"
+
+            target_source_chat = target[0]
+            target_source_message = target[1]
+
+            answer_callback(callback_id, "📊 در حال نمایش تحلیل...")
+
+            old_message_id = callback_message.get("message_id")
+
+            new_message_id = send_analysis_navigation_copy(
+                callback_chat_id,
+                target_source_chat,
+                target_source_message,
+                symbol,
+                has_previous,
+                has_newer,
+            )
+
+            if new_message_id is None:
+                answer_callback(callback_id, "❌ نمایش تحلیل انجام نشد.")
+                return "ok"
+
+            # ابتدا پیام جدید با دکمه آماده شد؛ حالا پیام قبلی را حذف می‌کنیم
+            # تا در چت فقط یک تحلیل ناوبری باقی بماند. اگر حذف شکست خورد،
+            # پیام جدید هم حذف می‌شود تا دو پیام ایجاد نشود.
+            if old_message_id is not None and not delete_message(
+                callback_chat_id, old_message_id
+            ):
+                delete_message(callback_chat_id, new_message_id)
+                answer_callback(callback_id, "⚠️ جابه‌جایی تحلیل انجام نشد.")
+                return "ok"
+
+            if is_test_chat(callback_chat_id):
+                save_test_navigation_message(
+                    callback_chat_id,
+                    symbol,
+                    new_message_id,
+                )
+
+            return "ok"
 
 # ================================================
 # انتخاب تحلیل امروز
@@ -3662,190 +3956,64 @@ def webhook():
             )
         else:
 
-            # چت خصوصی: از جدیدترین رکورد شروع می‌کنیم، اما اگر پیام منبع
-            # دیگر در Telegram وجود نداشت، رکورد خراب را کنار می‌گذاریم و
-            # سراغ جدیدترین تحلیل معتبر بعدی همان ارز می‌رویم.
-            candidates = get_analysis_candidates(symbol, None, 30)
-            copied_message_id = None
-            selected_source = None
-            already_sent = False
+            # =====================================================
+            # V26 خصوصی: فقط یک پیام تحلیل + دکمه‌های ناوبری
+            # =====================================================
+            # در چت خصوصی دیگر تحلیل قبلی را جداگانه ارسال نمی‌کنیم.
+            # کاربر با دکمه‌ها بین تحلیل‌ها جابه‌جا می‌شود.
+            candidates = get_analysis_candidates(symbol, None, 100)
 
-            for candidate_index, candidate in enumerate(candidates):
-                candidate_source_chat = candidate[0]
-                candidate_source_message = candidate[1]
-                candidate_date = candidate[2]
-
-                existing_current_copy = get_analysis_copy_message_id(
-                    candidate_source_chat,
-                    candidate_source_message,
-                    chat_id,
-                    symbol
-                )
-
-                if existing_current_copy is not None:
-                    # در حالت تست، برای چت تست اجازه می‌دهیم همان تحلیل
-                    # چند بار دوباره ارسال شود. در حالت عادی رفتار V25
-                    # بدون هیچ تغییری حفظ می‌شود.
-                    if candidate is candidates[0] and not is_test_chat(chat_id):
-                        already_sent = True
-                    elif candidate is candidates[0] and is_test_chat(chat_id):
-                        print(
-                            "TEST MODE: bypass already-sent for",
-                            symbol,
-                            "chat=",
-                            chat_id
-                        )
-                    else:
-                        break
-
-                    if candidate is not candidates[0]:
-                        break
-
-                # Reply باید به «تحلیل قبلیِ واقعی» همین ارز وصل شود.
-                # مهم: دیگر شرط نمی‌گذاریم که mapping قبلی حتماً از قبل
-                # برای همین کاربر وجود داشته باشد؛ اگر mapping نباشد،
-                # پیام قبلی را یک بار در چت خصوصی می‌سازیم و همان message_id
-                # را هدف Reply تحلیل جدید قرار می‌دهیم.
-                reply_to_message_id = None
-
-                if candidate_index + 1 < len(candidates):
-                    previous_candidate = candidates[candidate_index + 1]
-                    previous_source_chat = previous_candidate[0]
-                    previous_source_message = previous_candidate[1]
-                    previous_date = previous_candidate[2]
-
-                    reply_to_message_id = get_analysis_copy_message_id(
-                        previous_source_chat,
-                        previous_source_message,
-                        chat_id,
-                        symbol
-                    )
-
-                    # اگر mapping قبلی وجود ندارد، خودِ تحلیل قبلی را
-                    # در خصوصی کپی می‌کنیم تا Reply بعدی واقعاً به آن وصل شود.
-                    if reply_to_message_id is None:
-                        print(
-                            "PRIVATE CHAIN REPAIR:",
-                            symbol,
-                            "source=",
-                            previous_source_chat,
-                            previous_source_message
-                        )
-
-                        repaired_message_id = copy_analysis_message(
-                            chat_id,
-                            previous_source_chat,
-                            previous_source_message,
-                            reply_to_message_id=None
-                        )
-
-                        if repaired_message_id is not None:
-                            save_analysis_copy(
-                                previous_source_chat,
-                                previous_source_message,
-                                chat_id,
-                                repaired_message_id,
-                                symbol
-                            )
-                            send_analysis_date(
-                                chat_id,
-                                repaired_message_id,
-                                previous_date
-                            )
-                            reply_to_message_id = repaired_message_id
-
-                # اگر تحلیل قبلی مستقیماً در همین چت ثبت شده، همان message_id
-                # منبع قابل استفاده است.
-                if (
-                    reply_to_message_id is None
-                    and candidate_source_chat == chat_id
-                    and len(candidates) > candidate_index + 1
-                ):
-                    previous_candidate = candidates[candidate_index + 1]
-                    if previous_candidate[0] == chat_id:
-                        reply_to_message_id = previous_candidate[1]
-
-                print(
-                    "PRIVATE ANALYSIS REPLY TARGET:",
-                    symbol,
-                    "source=",
-                    candidate_source_chat,
-                    candidate_source_message,
-                    "reply_to=",
-                    reply_to_message_id
-                )
-
-                copied_message_id = copy_analysis_message(
-                    chat_id,
-                    candidate_source_chat,
-                    candidate_source_message,
-                    reply_to_message_id=reply_to_message_id
-                )
-
-                if copied_message_id:
-                    selected_source = (
-                        candidate_source_chat,
-                        candidate_source_message,
-                        candidate_date
-                    )
-                    break
-
-                # اگر Telegram گفت پیام منبع پیدا نشد، این رکورد احتمالاً قدیمی
-                # یا حذف‌شده است؛ حلقه به تحلیل معتبر بعدی می‌رود.
-                if 'message to copy not found' in (LAST_COPY_ERROR or '').lower():
-                    print(
-                        "SKIP INVALID SOURCE MESSAGE:",
-                        symbol,
-                        candidate_source_chat,
-                        candidate_source_message
-                    )
-                    continue
-
-                # خطاهای دیگر را بی‌جهت روی رکوردهای قدیمی پخش نکن؛ همان خطا را
-                # به کاربر نشان می‌دهیم.
-                break
-
-            if already_sent:
+            if not candidates:
                 send_message(
                     chat_id,
-                    "ℹ️ این تحلیل قبلاً برای شما ارسال شده است."
+                    f"❌ هنوز تحلیلی برای "
+                    f"{DISPLAY_NAMES.get(symbol, symbol)} "
+                    "ثبت نشده است."
                 )
                 return "ok"
 
-            if copied_message_id and selected_source:
-                selected_chat, selected_message, selected_date = selected_source
+            latest = candidates[0]
+            source_chat_id = latest[0]
+            source_message_id = latest[1]
 
-                # در حالت تست mapping جدید را ذخیره نمی‌کنیم تا درخواست بعدی
-                # دوباره بتواند همان تحلیل را تست کند و دیتابیس تولیدی آلوده نشود.
-                if not is_test_chat(chat_id):
-                    save_analysis_copy(
-                        selected_chat,
-                        selected_message,
-                        chat_id,
-                        copied_message_id,
-                        symbol
-                    )
-                else:
-                    print(
-                        "TEST MODE: selected copy NOT saved",
-                        symbol,
-                        "chat=",
-                        chat_id
-                    )
+            has_previous = len(candidates) > 1
+            has_newer = False
 
-                send_analysis_date(
-                    chat_id,
-                    copied_message_id,
-                    selected_date
-                )
-            else:
+            # اگر در تست قبلاً یک پیام ناوبری برای همین ارز داریم، آن را
+            # حذف می‌کنیم تا درخواست مجدد باعث تجمع پیام‌ها نشود.
+            if is_test_chat(chat_id):
+                old_test_message = get_test_navigation_message(chat_id, symbol)
+                if old_test_message is not None:
+                    delete_message(chat_id, old_test_message)
+                    clear_test_navigation_message(chat_id, symbol)
+
+            copied_message_id = send_analysis_navigation_copy(
+                chat_id,
+                source_chat_id,
+                source_message_id,
+                symbol,
+                has_previous,
+                has_newer,
+            )
+
+            if copied_message_id is None:
                 send_message(
                     chat_id,
-                    "⚠️ کپی تحلیل توسط Telegram انجام نشد.\n\n"
+                    "⚠️ نمایش تحلیل توسط Telegram انجام نشد.\n\n"
                     f"خطای واقعی Telegram:\n{LAST_COPY_ERROR or 'نامشخص'}"
                 )
+                return "ok"
 
-        return "ok"
+            if is_test_chat(chat_id):
+                save_test_navigation_message(
+                    chat_id,
+                    symbol,
+                    copied_message_id,
+                )
+
+            # در V26 خصوصی mapping تولیدی V25 را دستکاری نمی‌کنیم؛
+            # ناوبری مستقیماً بر اساس source messageها کار می‌کند.
+            return "ok"
 
 
 # =====================================================
