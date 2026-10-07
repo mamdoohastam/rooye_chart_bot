@@ -2426,15 +2426,25 @@ def send_analysis_navigation_copy(
         has_newer,
     )
 
+    # اگر هیچ دکمه‌ای وجود ندارد، تحلیل به‌تنهایی کاملاً معتبر است.
+    # در این حالت نباید editMessageReplyMarkup را با کیبورد خالی صدا بزنیم؛
+    # Telegram ممکن است آن را رد کند و نسخه قبلی بعداً پیام تحلیل را حذف می‌کرد.
+    if not keyboard.get("inline_keyboard"):
+        return copied_message_id
+
     if not edit_message_reply_markup(
         chat_id,
         copied_message_id,
         keyboard,
     ):
-        # اگر افزودن دکمه شکست خورد، پیام تحلیل را حذف می‌کنیم تا یک
-        # پیام بدون کنترل ناوبری به کاربر تحویل داده نشود.
-        delete_message(chat_id, copied_message_id)
-        return None
+        # شکست دکمه‌های ناوبری نباید باعث حذف خود تحلیل شود.
+        # copyMessage قبلاً با موفقیت انجام شده، پس همان پیام را نگه می‌داریم.
+        print(
+            "NAVIGATION MARKUP FAILED; ANALYSIS KEPT:",
+            chat_id,
+            copied_message_id,
+            flush=True,
+        )
 
     return copied_message_id
 
