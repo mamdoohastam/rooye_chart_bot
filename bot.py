@@ -31,7 +31,7 @@ def is_test_chat(chat_id):
     return TEST_MODE and TEST_CHAT_ID != 0 and chat_id == TEST_CHAT_ID
 
 
-CHANNEL_URL = "https://t.me/rooye_chart"
+CHANNEL_URL = "https://t.me/+W5VxSoiewRUzN2Y8"
 GROUP_URL = "https://t.me/rooye_chart_gap"
 
 
@@ -3004,7 +3004,7 @@ def webhook():
                     f"https://api.telegram.org/"
                     f"bot{BOT_TOKEN}/getChatMember",
                     params={
-                        "chat_id": "@rooye_chart",
+                        "chat_id": "1003934416736",
                         "user_id": user_id
                     },
                     timeout=10
