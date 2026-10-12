@@ -4080,7 +4080,7 @@ def webhook():
                 f"https://api.telegram.org/"
                 f"bot{BOT_TOKEN}/getChatMember",
                 params={
-                    "chat_id": "@rooye_chart",
+                    "chat_id": "-1003934416736",
                     "user_id": chat_id
                 },
                 timeout=10
