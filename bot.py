@@ -3009,8 +3009,8 @@ def webhook():
                     },
                     timeout=10
                 ).json()
-                 print("MEMBERSHIP API RESPONSE:", member)
-                 print("CHECKING CHANNEL ID:", -1003934416736)
+                    print("MEMBERSHIP API RESPONSE:", member)
+                    print("CHECKING CHANNEL ID:", -1003934416736)
 
                 status = member.get(
                     "result",
