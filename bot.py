@@ -2658,16 +2658,9 @@ def webhook():
 
                 return "ok"
 
-            if callback_chat_type in {
-                "group",
-                "supergroup"
-            }:
-
-                search_chat_id = callback_chat_id
-
-            else:
-
-                search_chat_id = None
+            # تحلیل‌ها ممکن است در گفت‌وگوی خصوصی با ربات ثبت شده باشند؛
+            # بنابراین برای نمایش در گروه، جست‌وجو باید بین همه چت‌ها باشد.
+            search_chat_id = None
 
             analyses = get_latest_two_analysis_info(
                 symbol,
@@ -2810,13 +2803,9 @@ def webhook():
 
                 return "ok"
 
-            if callback_chat_type in {
-                "group",
-                "supergroup"
-            }:
-                search_chat_id = callback_chat_id
-            else:
-                search_chat_id = None
+            # تحلیل‌ها ممکن است در گفت‌وگوی خصوصی با ربات ثبت شده باشند؛
+            # بنابراین برای نمایش در گروه، جست‌وجو باید بین همه چت‌ها باشد.
+            search_chat_id = None
 
             candidates = get_analysis_candidates_for_date(
                 symbol,
@@ -3616,13 +3605,8 @@ def webhook():
         start_text = start_date.strftime("%Y-%m-%d")
         end_text = end_date.strftime("%Y-%m-%d")
 
-        if chat_type in {
-            "group",
-            "supergroup"
-        }:
-            search_chat_id = chat_id
-        else:
-            search_chat_id = None
+        # تحلیل‌های ثبت‌شده در گفت‌وگوی خصوصی هم باید در منوی گروه دیده شوند.
+        search_chat_id = None
 
         rows = get_analysis_range(
             start_text,
@@ -3699,14 +3683,8 @@ def webhook():
 # =====================================================
 
     if analysis_request == "TODAY":
-        if chat_type in {
-            "group",
-            "supergroup"
-        }:
-            search_chat_id = chat_id
-
-        else:
-            search_chat_id = None
+        # تحلیل‌های ثبت‌شده در گفت‌وگوی خصوصی هم باید در منوی گروه دیده شوند.
+        search_chat_id = None
 
         rows = get_today_analyses(
             search_chat_id
@@ -3790,15 +3768,8 @@ def webhook():
 
         symbol = analysis_request
 
-        if chat_type in {
-            "group",
-            "supergroup"
-        }:
-            search_chat_id = chat_id
-
-        else:
-            search_chat_id = None
-
+        # تحلیل‌های ثبت‌شده در گفت‌وگوی خصوصی هم باید در گروه قابل درخواست باشند.
+        search_chat_id = None
 
         analyses = get_latest_two_analysis_info(
             symbol,
