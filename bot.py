@@ -50,9 +50,9 @@ EXCHANGES = {
         "ccxt_id": "tabdeal",
     },
 
-    "bitpin": {
-        "name": "بیت‌پین",
-        "ccxt_id": "bitpin",
+    "arzplus": {
+        "name": "ارزپلاس",
+        "ccxt_id": None,
     },
 
     "abantether": {
@@ -80,9 +80,10 @@ EXCHANGE_ALIASES = {
     "تبدیل": "tabdeal",
     "tabdeal": "tabdeal",
 
-    "بیت پین": "bitpin",
-    "بیت‌پین": "bitpin",
-    "bitpin": "bitpin",
+    "ارز پلاس": "arzplus",
+    "ارزپلاس": "arzplus",
+    "ارز‌پلاس": "arzplus",
+    "arzplus": "arzplus",
 
       "آبان تتر": "abantether",
     "آبان‌تتر": "abantether",
@@ -1701,6 +1702,114 @@ def get_exchange_prices(
 ):
 
 # =====================================================
+# ArzPlus - Public Market API (بدون نیاز به توکن)
+# =====================================================
+    if exchange_id == "arzplus":
+        base_url = "https://api.arzplus.net/api/v1/market/symbols/"
+
+        response = requests.get(
+            base_url,
+            params={"asset": asset.upper()},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+
+        # API ممکن است فهرست را مستقیم یا در کلید results برگرداند.
+        if isinstance(payload, dict):
+            market_rows = payload.get("results", payload.get("data", []))
+        else:
+            market_rows = payload
+
+        if not isinstance(market_rows, list):
+            raise LookupError("فهرست بازارهای ارزپلاس نامعتبر است.")
+
+        asset = asset.upper()
+        irt_market = None
+        usdt_market = None
+
+        for market in market_rows:
+            if not isinstance(market, dict):
+                continue
+
+            market_name = str(
+                market.get("name") or market.get("symbol") or ""
+            ).upper().replace("/", "").replace("_", "").replace("-", "")
+
+            enabled = market.get("enable", market.get("enabled", True))
+            if enabled is False or str(enabled).lower() in {"false", "0", "no"}:
+                continue
+
+            if market_name == f"{asset}IRT":
+                irt_market = market_name
+            elif market_name == f"{asset}USDT":
+                usdt_market = market_name
+
+        def arzplus_market_price(market_symbol):
+            detail_response = requests.get(
+                f"{base_url}{market_symbol}",
+                timeout=10,
+            )
+            detail_response.raise_for_status()
+            detail = detail_response.json()
+
+            if isinstance(detail, dict) and isinstance(detail.get("data"), dict):
+                detail = detail["data"]
+
+            if not isinstance(detail, dict):
+                raise LookupError(
+                    f"پاسخ بازار {market_symbol} از ارزپلاس نامعتبر است."
+                )
+
+            value = detail.get("price")
+            if value is None:
+                value = detail.get("last_trade", {}).get("price") if isinstance(
+                    detail.get("last_trade"), dict
+                ) else None
+
+            # اگر فیلد price خالی باشد، قیمت آخرین معامله را از اردربوک عمومی می‌گیریم.
+            if value is None:
+                depth_response = requests.get(
+                    f"https://api.arzplus.net/api/v1/market/depth/{market_symbol}",
+                    timeout=10,
+                )
+                depth_response.raise_for_status()
+                depth = depth_response.json()
+                if isinstance(depth, dict):
+                    last_trade = depth.get("last_trade")
+                    if isinstance(last_trade, dict):
+                        value = last_trade.get("price")
+
+            if value is None:
+                raise LookupError(
+                    f"قیمت بازار {market_symbol} در ارزپلاس پیدا نشد."
+                )
+            return float(value)
+
+        irt_price = None
+        usdt_price = None
+
+        if irt_market:
+            # API قیمت بازارهای IRT را به ریال می‌دهد؛ خروجی ربات تومان است.
+            irt_price = arzplus_market_price(irt_market) / 10
+
+        if usdt_market:
+            usdt_price = arzplus_market_price(usdt_market)
+
+        if irt_price is None and usdt_price is None:
+            raise LookupError(
+                f"بازار {asset} در ارزپلاس پیدا نشد یا فعال نیست."
+            )
+
+        return {
+            "irt_price": irt_price,
+            "usdt_price": usdt_price,
+            "irt_symbol": irt_market,
+            "usdt_symbol": usdt_market,
+        }
+
+
+# =====================================================
 # Ourbit - Public Spot API
 # =====================================================
     if exchange_id == "ourbit":
@@ -1999,8 +2108,8 @@ def exchange_keyboard(asset):
             ],
             [
                 {
-                    "text": "🟣 بیت‌پین",
-                    "callback_data": f"price:{asset}:bitpin"
+                    "text": "🟣 ارزپلاس",
+                    "callback_data": f"price:{asset}:arzplus"
                 },
                 {
                     "text": "🟠 آبان‌تتر",
