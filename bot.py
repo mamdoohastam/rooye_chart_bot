@@ -1740,7 +1740,8 @@ def get_exchange_prices(
                 timeout=10,
             )
             response.raise_for_status()
-            market_rows.extend(extract_market_rows(response.json()))
+          print("ARZPLUS DEBUG: market_rows count =", len(market_rows))
+print("ARZPLUS DEBUG: first markets =", market_rows[:5])  market_rows.extend(extract_market_rows(response.json()))
 
         irt_market = None
         usdt_market = None
