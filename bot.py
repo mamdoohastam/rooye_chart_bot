@@ -1771,7 +1771,7 @@ def get_exchange_prices(
                 return f"{market_asset}{quote_asset}"
             return compact_name
 
-        # اگر فیلترها نتیجه ندادند، فهرست عمومی را هم بررسی کن.
+        # فهرست عمومی را بررسی کن و ساختار واقعی پاسخ را برای تشخیص مشکل ثبت کن.
         if not market_rows:
             try:
                 response = requests.get(base_url, timeout=10)
@@ -1779,8 +1779,25 @@ def get_exchange_prices(
                 payload = response.json()
                 extracted = extract_market_rows(payload)
                 add_rows(extracted)
+                top_keys = list(payload.keys())[:20] if isinstance(payload, dict) else None
+                sample = [
+                    {
+                        "name": row.get("name"),
+                        "symbol": row.get("symbol"),
+                        "asset": row.get("asset"),
+                        "base_asset": row.get("base_asset"),
+                    }
+                    for row in extracted[:5] if isinstance(row, dict)
+                ]
+                print(
+                    f"ARZPLUS MARKET LIST DEBUG [{asset}] "
+                    f"status={response.status_code} type={type(payload).__name__} "
+                    f"keys={top_keys} extracted={len(extracted)} "
+                    f"total_rows={len(market_rows)} sample={sample} "
+                    f"next={payload.get('next') if isinstance(payload, dict) else None}"
+                )
                 if not extracted:
-                    print(f"ARZPLUS MARKET LIST EMPTY [{asset}] status={response.status_code} body={response.text[:700]}")
+                    print(f"ARZPLUS MARKET LIST EMPTY [{asset}] body={response.text[:700]}")
             except Exception as exc:
                 print(f"ARZPLUS MARKET LIST [{asset}]: {exc}")
 
@@ -1804,8 +1821,16 @@ def get_exchange_prices(
                     response = requests.get(next_url, timeout=10)
                     response.raise_for_status()
                     payload = response.json()
-                    add_rows(extract_market_rows(payload))
+                    page_rows = extract_market_rows(payload)
+                    add_rows(page_rows)
                     next_url = payload.get("next") if isinstance(payload, dict) else None
+                    print(
+                        f"ARZPLUS PAGE DEBUG [{asset}] page={len(seen_urls)} "
+                        f"status={response.status_code} type={type(payload).__name__} "
+                        f"keys={list(payload.keys())[:20] if isinstance(payload, dict) else None} "
+                        f"extracted={len(page_rows)} total_rows={len(market_rows)} "
+                        f"next={next_url}"
+                    )
                 except Exception as exc:
                     print(f"ARZPLUS FULL MARKET LIST [{asset}]: {exc}")
                     break
@@ -1816,6 +1841,13 @@ def get_exchange_prices(
                 for quote_asset in ("IRT", "USDT"):
                     if pair == f"{asset}{quote_asset}":
                         candidates[quote_asset].append(market)
+            print(
+                f"ARZPLUS CANDIDATE DEBUG [{asset}] "
+                f"rows={len(market_rows)} "
+                f"matching_prefix={[normalized_pair(m) for m in market_rows if normalized_pair(m).startswith(asset)][:20]} "
+                f"irt={[normalized_pair(m) for m in candidates['IRT']]} "
+                f"usdt={[normalized_pair(m) for m in candidates['USDT']]}"
+            )
 
         def is_enabled(market):
             value = market.get("enable", market.get("enabled", True))
