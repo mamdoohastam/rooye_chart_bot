@@ -1701,115 +1701,146 @@ def get_exchange_prices(
     asset
 ):
 
-# =====================================================
-# ArzPlus - Public Market API (بدون نیاز به توکن)
-# =====================================================
+    # =====================================================
+    # ArzPlus - Public Market API (بدون نیاز به توکن)
+    # =====================================================
     if exchange_id == "arzplus":
         base_url = "https://api.arzplus.net/api/v1/market/symbols/"
-        asset = asset.upper()
+        asset = str(asset).strip().upper()
 
         def extract_market_rows(payload):
-            """Normalize common list, paginated, and single-market API responses."""
+            """استخراج بازارها از پاسخ‌های لیستی، صفحه‌بندی‌شده یا تودرتو."""
             if isinstance(payload, list):
-                return [row for row in payload if isinstance(row, dict)]
+                rows = []
+                for item in payload:
+                    rows.extend(extract_market_rows(item))
+                return rows
+
             if not isinstance(payload, dict):
                 return []
 
-            for key in ("results", "data", "markets", "items"):
-                value = payload.get(key)
-                if isinstance(value, list):
-                    return [row for row in value if isinstance(row, dict)]
-                if isinstance(value, dict):
-                    nested = extract_market_rows(value)
-                    if nested:
-                        return nested
-
-            # Some responses may return one market object directly.
+            # یک ردیف بازار مستقیم
             if payload.get("name") or payload.get("symbol"):
-                return [payload]
-            return []
+                if payload.get("asset") or payload.get("base_asset"):
+                    return [payload]
 
-        # First fetch the unfiltered market list. Some API deployments do not
-        # consistently apply combined asset/base_asset filters, so filtering is
-        # done locally using the documented fields as the source of truth.
+            rows = []
+            for key in ("results", "data", "markets", "items"):
+                if key in payload:
+                    rows.extend(extract_market_rows(payload[key]))
+            return rows
+
+        # جست‌وجوی مستقیم با نام بازار (طبق مستندات API)، سپس فیلتر دارایی.
+        # این کار وابستگی به صفحه اول فهرست بازارها را برطرف می‌کند.
         market_rows = []
-        next_url = base_url
-        seen_urls = set()
-        for _ in range(20):
-            if not next_url or next_url in seen_urls:
-                break
-            seen_urls.add(next_url)
-            response = requests.get(next_url, timeout=10)
-            response.raise_for_status()
-            payload = response.json()
-            market_rows.extend(extract_market_rows(payload))
-            next_url = payload.get("next") if isinstance(payload, dict) else None
+        seen_market_names = set()
 
-        # Fallback to explicit filters if the unfiltered endpoint returned no rows.
-        if not market_rows:
-            for quote_asset in ("IRT", "USDT"):
-                response = requests.get(
-                    base_url,
-                    params={"asset": asset, "base_asset": quote_asset},
-                    timeout=10,
-                )
-                response.raise_for_status()
-                market_rows.extend(extract_market_rows(response.json()))
+        def add_rows(rows):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("name") or row.get("symbol") or "").strip()
+                key = name.upper() or repr(sorted(row.items()))
+                if key not in seen_market_names:
+                    seen_market_names.add(key)
+                    market_rows.append(row)
 
-        irt_market = None
-        usdt_market = None
+        for quote_asset in ("IRT", "USDT"):
+            market_name = f"{asset}{quote_asset}"
+            queries = (
+                {"name": market_name},
+                {"asset": asset, "base_asset": quote_asset},
+            )
+            for params in queries:
+                try:
+                    response = requests.get(base_url, params=params, timeout=10)
+                    response.raise_for_status()
+                    add_rows(extract_market_rows(response.json()))
+                except Exception as exc:
+                    print(f"ARZPLUS MARKET LOOKUP [{asset} {quote_asset} {params}]: {exc}")
 
-        for market in market_rows:
-            raw_name = str(market.get("name") or market.get("symbol") or "").strip()
-            normalized_name = raw_name.upper().replace("/", "").replace("_", "").replace("-", "")
+        def normalized_pair(market):
+            name = str(market.get("name") or market.get("symbol") or "").strip()
+            compact_name = name.upper().replace("/", "").replace("_", "").replace("-", "")
             market_asset = str(market.get("asset") or "").strip().upper()
             quote_asset = str(market.get("base_asset") or "").strip().upper()
-
-            # Prefer asset/base_asset fields for matching; keep the original API
-            # market name for the detail/depth endpoint.
             if market_asset and quote_asset:
-                normalized_pair = f"{market_asset}{quote_asset}"
-            else:
-                normalized_pair = normalized_name
-            market_symbol = raw_name or normalized_pair
+                return f"{market_asset}{quote_asset}"
+            return compact_name
 
-            enabled = market.get("enable", market.get("enabled", True))
-            if enabled is False or str(enabled).strip().lower() in {"false", "0", "no"}:
-                continue
+        # اگر فیلترها نتیجه ندادند، فهرست عمومی را هم بررسی کن.
+        if not market_rows:
+            try:
+                response = requests.get(base_url, timeout=10)
+                response.raise_for_status()
+                add_rows(extract_market_rows(response.json()))
+            except Exception as exc:
+                print(f"ARZPLUS MARKET LIST [{asset}]: {exc}")
 
-            if normalized_pair == f"{asset}IRT":
-                irt_market = market_symbol
-            elif normalized_pair == f"{asset}USDT":
-                usdt_market = market_symbol
+        candidates = {"IRT": [], "USDT": []}
+        for market in market_rows:
+            pair = normalized_pair(market)
+            for quote_asset in ("IRT", "USDT"):
+                if pair == f"{asset}{quote_asset}":
+                    candidates[quote_asset].append(market)
+
+        # اگر فیلترها بازار این ارز را پیدا نکردند، کل فهرست صفحه‌بندی‌شده را بخوان.
+        # این fallback حتی وقتی API برای فیلتر نامرتبط نتیجه برمی‌گرداند اجرا می‌شود.
+        if not candidates["IRT"] and not candidates["USDT"]:
+            next_url = base_url
+            seen_urls = set()
+            for _ in range(30):
+                if not next_url or next_url in seen_urls:
+                    break
+                seen_urls.add(next_url)
+                try:
+                    response = requests.get(next_url, timeout=10)
+                    response.raise_for_status()
+                    payload = response.json()
+                    add_rows(extract_market_rows(payload))
+                    next_url = payload.get("next") if isinstance(payload, dict) else None
+                except Exception as exc:
+                    print(f"ARZPLUS FULL MARKET LIST [{asset}]: {exc}")
+                    break
+
+            candidates = {"IRT": [], "USDT": []}
+            for market in market_rows:
+                pair = normalized_pair(market)
+                for quote_asset in ("IRT", "USDT"):
+                    if pair == f"{asset}{quote_asset}":
+                        candidates[quote_asset].append(market)
+
+        def is_enabled(market):
+            value = market.get("enable", market.get("enabled", True))
+            if isinstance(value, bool):
+                return value
+            return str(value).strip().lower() not in {"false", "0", "no", "off"}
+
+        # بازار فعال اولویت دارد، اما بازار با enable=False را حذف نمی‌کنیم؛
+        # ممکن است API وضعیت این فیلد را نادرست/قدیمی برگرداند.
+        for quote_asset in candidates:
+            candidates[quote_asset].sort(key=lambda row: not is_enabled(row))
 
         def arzplus_market_price(market_symbol):
-            detail_response = requests.get(
-                f"{base_url}{market_symbol}/",
-                timeout=10,
-            )
+            detail_url = f"{base_url}{market_symbol}/"
+            detail_response = requests.get(detail_url, timeout=10)
             detail_response.raise_for_status()
             detail = detail_response.json()
 
             if isinstance(detail, dict) and isinstance(detail.get("data"), dict):
                 detail = detail["data"]
 
-            if not isinstance(detail, dict):
-                raise LookupError(
-                    f"پاسخ بازار {market_symbol} از ارزپلاس نامعتبر است."
-                )
+            value = None
+            if isinstance(detail, dict):
+                value = detail.get("price")
+                last_trade = detail.get("last_trade")
+                if value in (None, "") and isinstance(last_trade, dict):
+                    value = last_trade.get("price")
 
-            value = detail.get("price")
-            if value is None:
-                value = detail.get("last_trade", {}).get("price") if isinstance(
-                    detail.get("last_trade"), dict
-                ) else None
-
-            # If price is null, try the public order-book endpoint.
-            if value is None:
-                depth_response = requests.get(
-                    f"https://api.arzplus.net/api/v1/market/depth/{market_symbol}/",
-                    timeout=10,
-                )
+            # اگر قیمت جزئیات خالی بود، آخرین معامله را از اردربوک بگیر.
+            if value in (None, ""):
+                depth_url = f"https://api.arzplus.net/api/v1/market/depth/{market_symbol}/"
+                depth_response = requests.get(depth_url, timeout=10)
                 depth_response.raise_for_status()
                 depth = depth_response.json()
                 if isinstance(depth, dict) and isinstance(depth.get("data"), dict):
@@ -1818,33 +1849,52 @@ def get_exchange_prices(
                     last_trade = depth.get("last_trade")
                     if isinstance(last_trade, dict):
                         value = last_trade.get("price")
+                    # پشتیبان: اگر آخرین معامله نبود، قیمت اولین سفارش را بخوان.
+                    if value in (None, ""):
+                        asks = depth.get("asks") or []
+                        bids = depth.get("bids") or []
+                        if asks and isinstance(asks[0], dict):
+                            value = asks[0].get("price")
+                        elif asks and isinstance(asks[0], (list, tuple)):
+                            value = asks[0][0]
+                        elif bids and isinstance(bids[0], dict):
+                            value = bids[0].get("price")
+                        elif bids and isinstance(bids[0], (list, tuple)):
+                            value = bids[0][0]
 
-            if value is None:
-                raise LookupError(
-                    f"قیمت بازار {market_symbol} در ارزپلاس پیدا نشد."
-                )
+            if value in (None, ""):
+                raise LookupError(f"API برای بازار {market_symbol} قیمت قابل استفاده برنگرداند")
             return float(value)
 
-        irt_price = None
-        usdt_price = None
+        prices = {"IRT": None, "USDT": None}
+        selected_symbols = {"IRT": None, "USDT": None}
 
-        if irt_market:
-            # API قیمت بازارهای IRT را به ریال می‌دهد؛ خروجی ربات تومان است.
-            irt_price = arzplus_market_price(irt_market) / 10
+        for quote_asset in ("IRT", "USDT"):
+            for market in candidates[quote_asset]:
+                market_symbol = str(market.get("name") or market.get("symbol") or "").strip()
+                if not market_symbol:
+                    continue
+                try:
+                    value = arzplus_market_price(market_symbol)
+                    prices[quote_asset] = value / 10 if quote_asset == "IRT" else value
+                    selected_symbols[quote_asset] = market_symbol
+                    break
+                except Exception as exc:
+                    print(f"ARZPLUS PRICE ERROR [{asset} {market_symbol}]: {exc}")
 
-        if usdt_market:
-            usdt_price = arzplus_market_price(usdt_market)
-
-        if irt_price is None and usdt_price is None:
+        if prices["IRT"] is None and prices["USDT"] is None:
+            found_pairs = [normalized_pair(m) for m in market_rows]
+            matching = [pair for pair in found_pairs if pair.startswith(asset)]
             raise LookupError(
-                f"بازار {asset} در ارزپلاس پیدا نشد یا فعال نیست."
+                f"بازار {asset} پیدا نشد یا قیمت API قابل دریافت نبود. "
+                f"بازارهای مشابه: {matching[:10]}"
             )
 
         return {
-            "irt_price": irt_price,
-            "usdt_price": usdt_price,
-            "irt_symbol": irt_market,
-            "usdt_symbol": usdt_market,
+            "irt_price": prices["IRT"],
+            "usdt_price": prices["USDT"],
+            "irt_symbol": selected_symbols["IRT"],
+            "usdt_symbol": selected_symbols["USDT"],
         }
 
 
