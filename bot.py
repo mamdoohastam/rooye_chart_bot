@@ -1719,13 +1719,12 @@ def get_exchange_prices(
             if not isinstance(payload, dict):
                 return []
 
-            # یک ردیف بازار مستقیم
+            # یک ردیف بازار مستقیم؛ بعضی پاسخ‌ها ممکن است فقط name/symbol داشته باشند.
             if payload.get("name") or payload.get("symbol"):
-                if payload.get("asset") or payload.get("base_asset"):
-                    return [payload]
+                return [payload]
 
             rows = []
-            for key in ("results", "data", "markets", "items"):
+            for key in ("results", "data", "markets", "items", "symbols", "objects"):
                 if key in payload:
                     rows.extend(extract_market_rows(payload[key]))
             return rows
@@ -1755,7 +1754,11 @@ def get_exchange_prices(
                 try:
                     response = requests.get(base_url, params=params, timeout=10)
                     response.raise_for_status()
-                    add_rows(extract_market_rows(response.json()))
+                    payload = response.json()
+                    extracted = extract_market_rows(payload)
+                    add_rows(extracted)
+                    if not extracted:
+                        print(f"ARZPLUS LOOKUP EMPTY [{asset} {quote_asset} {params}] status={response.status_code} body={response.text[:500]}")
                 except Exception as exc:
                     print(f"ARZPLUS MARKET LOOKUP [{asset} {quote_asset} {params}]: {exc}")
 
@@ -1773,7 +1776,11 @@ def get_exchange_prices(
             try:
                 response = requests.get(base_url, timeout=10)
                 response.raise_for_status()
-                add_rows(extract_market_rows(response.json()))
+                payload = response.json()
+                extracted = extract_market_rows(payload)
+                add_rows(extracted)
+                if not extracted:
+                    print(f"ARZPLUS MARKET LIST EMPTY [{asset}] status={response.status_code} body={response.text[:700]}")
             except Exception as exc:
                 print(f"ARZPLUS MARKET LIST [{asset}]: {exc}")
 
