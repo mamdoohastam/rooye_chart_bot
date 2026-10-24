@@ -1729,43 +1729,58 @@ def get_exchange_prices(
                 return [payload]
             return []
 
-        # Request each quote market separately; the API documents both asset and
-        # base_asset as supported filters. This avoids depending on one response
-        # shape or on the API returning both quote markets in one response.
+        # First fetch the unfiltered market list. Some API deployments do not
+        # consistently apply combined asset/base_asset filters, so filtering is
+        # done locally using the documented fields as the source of truth.
         market_rows = []
-        for quote_asset in ("IRT", "USDT"):
-            response = requests.get(
-                base_url,
-                params={"asset": asset, "base_asset": quote_asset},
-                timeout=10,
-            )
+        next_url = base_url
+        seen_urls = set()
+        for _ in range(20):
+            if not next_url or next_url in seen_urls:
+                break
+            seen_urls.add(next_url)
+            response = requests.get(next_url, timeout=10)
             response.raise_for_status()
-          print("ARZPLUS DEBUG: market_rows count =", len(market_rows))
-print("ARZPLUS DEBUG: first markets =", market_rows[:5])  market_rows.extend(extract_market_rows(response.json()))
+            payload = response.json()
+            market_rows.extend(extract_market_rows(payload))
+            next_url = payload.get("next") if isinstance(payload, dict) else None
+
+        # Fallback to explicit filters if the unfiltered endpoint returned no rows.
+        if not market_rows:
+            for quote_asset in ("IRT", "USDT"):
+                response = requests.get(
+                    base_url,
+                    params={"asset": asset, "base_asset": quote_asset},
+                    timeout=10,
+                )
+                response.raise_for_status()
+                market_rows.extend(extract_market_rows(response.json()))
 
         irt_market = None
         usdt_market = None
 
         for market in market_rows:
-            market_name = str(
-                market.get("name") or market.get("symbol") or ""
-            ).upper().replace("/", "").replace("_", "").replace("-", "")
+            raw_name = str(market.get("name") or market.get("symbol") or "").strip()
+            normalized_name = raw_name.upper().replace("/", "").replace("_", "").replace("-", "")
+            market_asset = str(market.get("asset") or "").strip().upper()
+            quote_asset = str(market.get("base_asset") or "").strip().upper()
 
-            # If name/symbol is absent or differently formatted, derive it from
-            # the documented asset + base_asset fields.
-            market_asset = str(market.get("asset") or "").upper()
-            quote_asset = str(market.get("base_asset") or "").upper()
-            if not market_name and market_asset and quote_asset:
-                market_name = f"{market_asset}{quote_asset}"
+            # Prefer asset/base_asset fields for matching; keep the original API
+            # market name for the detail/depth endpoint.
+            if market_asset and quote_asset:
+                normalized_pair = f"{market_asset}{quote_asset}"
+            else:
+                normalized_pair = normalized_name
+            market_symbol = raw_name or normalized_pair
 
             enabled = market.get("enable", market.get("enabled", True))
-            if enabled is False or str(enabled).lower() in {"false", "0", "no"}:
+            if enabled is False or str(enabled).strip().lower() in {"false", "0", "no"}:
                 continue
 
-            if market_name == f"{asset}IRT":
-                irt_market = market_name
-            elif market_name == f"{asset}USDT":
-                usdt_market = market_name
+            if normalized_pair == f"{asset}IRT":
+                irt_market = market_symbol
+            elif normalized_pair == f"{asset}USDT":
+                usdt_market = market_symbol
 
         def arzplus_market_price(market_symbol):
             detail_response = requests.get(
