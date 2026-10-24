@@ -1,5 +1,4 @@
         if text == "/start":
-
             send_message(
                 chat_id,
                 "🤖 ربات روی چارت\n\n"
