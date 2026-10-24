@@ -1735,6 +1735,7 @@ def get_exchange_prices(
         seen_market_names = set()
 
         def add_rows(rows):
+            print(f"ARZPLUS MARKET NAMES [{asset}]: {[r.get('name') or r.get('symbol') for r in market_rows]}")
             for row in rows:
                 if not isinstance(row, dict):
                     continue
