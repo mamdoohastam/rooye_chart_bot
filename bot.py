@@ -1709,6 +1709,28 @@ def get_exchange_prices(
         symbols_url = f"{base_url}symbols/"
         asset = str(asset).strip().upper()
 
+        # بعضی فایروال‌ها درخواست بدون User-Agent را رد می‌کنند.
+        # Session باعث می‌شود همه درخواست‌های راستین Header یکسان داشته باشند.
+        raastin_session = requests.Session()
+        raastin_session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://raastin.com/",
+            "Origin": "https://raastin.com",
+        })
+
+        def raastin_get(url, **kwargs):
+            response = raastin_session.get(url, timeout=12, **kwargs)
+            print(
+                "RAASTIN HTTP:", response.status_code,
+                response.url,
+                "BODY:", response.text[:700]
+            )
+            response.raise_for_status()
+            return response
+
         def extract_market_rows(payload):
             """استخراج ردیف‌های بازار از پاسخ لیستی یا تودرتوی API."""
             if isinstance(payload, list):
@@ -1745,7 +1767,7 @@ def get_exchange_prices(
                 {"asset": asset, "base_asset": quote_asset},
             ):
                 try:
-                    response = requests.get(symbols_url, params=params, timeout=10)
+                    response = raastin_get(symbols_url, params=params)
                     response.raise_for_status()
                     add_rows(extract_market_rows(response.json()))
                 except Exception as exc:
@@ -1754,7 +1776,7 @@ def get_exchange_prices(
         # در صورت عدم پشتیبانی فیلترها، فهرست کامل بازارها را دریافت می‌کنیم.
         if not market_rows:
             try:
-                response = requests.get(symbols_url, timeout=10)
+                response = raastin_get(symbols_url)
                 response.raise_for_status()
                 payload = response.json()
                 add_rows(extract_market_rows(payload))
@@ -1762,7 +1784,7 @@ def get_exchange_prices(
                 next_url = payload.get("next") if isinstance(payload, dict) else None
                 pages = 0
                 while next_url and pages < 100:
-                    page_response = requests.get(next_url, timeout=10)
+                    page_response = raastin_get(next_url)
                     page_response.raise_for_status()
                     page_payload = page_response.json()
                     add_rows(extract_market_rows(page_payload))
@@ -1797,7 +1819,7 @@ def get_exchange_prices(
         def raastin_market_price(market_symbol):
             # Endpoint رسمی جزئیات بازار: /market/symbols/{symbol}/
             detail_url = f"{symbols_url}{market_symbol}/"
-            response = requests.get(detail_url, timeout=10)
+            response = raastin_get(detail_url)
             response.raise_for_status()
             detail = response.json()
             if isinstance(detail, dict) and isinstance(detail.get("data"), dict):
@@ -1807,7 +1829,7 @@ def get_exchange_prices(
             if value in (None, ""):
                 # در صورت خالی بودن price، آخرین معامله از اردربوک عمومی خوانده می‌شود.
                 depth_url = f"{base_url}depth/{market_symbol}/"
-                depth_response = requests.get(depth_url, timeout=10)
+                depth_response = raastin_get(depth_url)
                 depth_response.raise_for_status()
                 depth = depth_response.json()
                 if isinstance(depth, dict) and isinstance(depth.get("data"), dict):
