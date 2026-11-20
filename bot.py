@@ -234,6 +234,242 @@ DISPLAY_NAMES = {
 # دیتابیس PostgreSQL / Supabase
 # =========================================================
 
+
+
+# =========================================================
+# اشتراک پولی و پرداخت خودکار USDT روی BSC
+# =========================================================
+SUBSCRIPTION_OWNER_ID = int(os.environ.get("SUBSCRIPTION_OWNER_ID", "6738956694"))
+SUBSCRIPTION_WALLET = os.environ.get(
+    "USDT_BSC_WALLET", "0x67b9c74e8ebf7586bf0afdf6995921d1fd3c62da"
+).strip()
+USDT_BSC_CONTRACT = os.environ.get(
+    "USDT_BSC_CONTRACT", "0x55d398326f99059fF775485246999027B3197955"
+).strip().lower()
+USDT_PRICE = 15
+USDT_DECIMALS = 18
+BSC_RPC_URLS = [
+    x.strip() for x in os.environ.get(
+        "BSC_RPC_URLS",
+        "https://bsc-dataseed.binance.org,https://bsc-dataseed1.binance.org,https://bsc-dataseed2.binance.org"
+    ).split(",") if x.strip()
+]
+TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+
+def init_subscription_tables():
+    with get_db_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_subscriptions (
+                user_id BIGINT PRIMARY KEY,
+                expires_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_usdt_payments (
+                tx_hash TEXT PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                amount NUMERIC(30, 18) NOT NULL,
+                block_number BIGINT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_subscriptions_expiry ON bot_subscriptions (expires_at)")
+        conn.commit()
+
+
+def get_subscription_expiry(user_id):
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT expires_at FROM bot_subscriptions WHERE user_id = %s",
+            (int(user_id),)
+        ).fetchone()
+    return row[0] if row else None
+
+
+def is_subscription_admin(user_id):
+    try:
+        return int(user_id) == SUBSCRIPTION_OWNER_ID or is_admin_user(user_id)
+    except (TypeError, ValueError):
+        return False
+
+
+def subscription_is_active(user_id):
+    if is_subscription_admin(user_id):
+        return True
+    expiry = get_subscription_expiry(user_id)
+    return bool(expiry and expiry > datetime.now(ZoneInfo("UTC")))
+
+
+def subscription_menu(chat_id):
+    expiry = get_subscription_expiry(chat_id)
+    now = datetime.now(ZoneInfo("UTC"))
+    if expiry and expiry > now:
+        expiry_text = expiry.astimezone(ZoneInfo("Asia/Tehran")).strftime("%Y-%m-%d %H:%M")
+        status = f"وضعیت: فعال تا {expiry_text} به وقت تهران"
+    else:
+        status = "وضعیت: غیرفعال؛ برای استفاده از امکانات ربات اشتراک تهیه کنید."
+    send_message(
+        chat_id,
+        "💳 اشتراک ربات روی چارت\n\n"
+        "هزینه اشتراک: ۱۵ USDT در ماه\n"
+        "شبکه پرداخت: BNB Smart Chain (BEP20)\n"
+        "مدت اشتراک: ۳۰ روز\n\n"
+        f"{status}\n\n"
+        "برای پرداخت، دکمه زیر را بزنید.",
+        reply_markup={"inline_keyboard": [
+            [{"text": "💎 پرداخت ۱۵ تتر", "callback_data": "sub_pay"}],
+            [{"text": "🔄 بررسی وضعیت اشتراک", "callback_data": "sub_status"}],
+        ]}
+    )
+
+
+def subscription_payment_instructions(chat_id):
+    send_message(
+        chat_id,
+        "💎 پرداخت اشتراک روی چارت\n\n"
+        "مبلغ: 15 USDT\n"
+        "شبکه: BSC (BEP20)\n\n"
+        f"آدرس واریز:\n{SUBSCRIPTION_WALLET}\n\n"
+        "۱) دقیقاً روی شبکه BSC واریز کنید.\n"
+        "۲) پس از ثبت تراکنش، هش تراکنش (TXID) را همین‌جا ارسال کنید.\n"
+        "۳) ربات تراکنش را روی بلاک‌چین بررسی می‌کند و در صورت تأیید، اشتراک را خودکار ۳۰ روز فعال می‌کند.\n\n"
+        "⚠️ انتقال روی شبکه یا توکن اشتباه قابل تأیید نیست. فقط TXID را بفرستید؛ عبارت بازیابی یا کلید خصوصی را هرگز ارسال نکنید.",
+        reply_markup={"inline_keyboard": [[{"text": "↩️ بازگشت", "callback_data": "sub_home"}]]}
+    )
+
+
+def rpc_call(method, params):
+    last_error = None
+    for url in BSC_RPC_URLS:
+        try:
+            response = requests.post(
+                url,
+                json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+                timeout=12,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if payload.get("error"):
+                last_error = payload["error"]
+                continue
+            return payload.get("result")
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"BSC RPC unavailable: {last_error}")
+
+
+def verify_bsc_usdt_transfer(tx_hash):
+    if not re.fullmatch(r"0x[a-fA-F0-9]{64}", tx_hash or ""):
+        return False, "فرمت TXID معتبر نیست.", None
+    receipt = rpc_call("eth_getTransactionReceipt", [tx_hash])
+    if receipt is None:
+        return False, "تراکنش هنوز در شبکه پیدا نشده است. چند دقیقه بعد دوباره TXID را ارسال کنید.", None
+    if receipt.get("status", "0x0").lower() != "0x1":
+        return False, "این تراکنش موفق نبوده است.", None
+    latest_hex = rpc_call("eth_blockNumber", [])
+    latest_block = int(latest_hex, 16)
+    tx_block = int(receipt.get("blockNumber", "0x0"), 16)
+    if latest_block - tx_block + 1 < 12:
+        return False, "تراکنش ثبت شده، اما هنوز ۱۲ تأیید شبکه را نگرفته است. کمی بعد همین TXID را دوباره ارسال کنید.", None
+
+    expected_to = SUBSCRIPTION_WALLET.lower().replace("0x", "").rjust(64, "0")
+    total_received = 0
+    for log in receipt.get("logs", []):
+        topics = log.get("topics", [])
+        if (log.get("address", "").lower() != USDT_BSC_CONTRACT
+                or len(topics) < 3
+                or topics[0].lower() != TRANSFER_TOPIC
+                or topics[2].lower().replace("0x", "") != expected_to):
+            continue
+        try:
+            total_received += int(log.get("data", "0x0"), 16)
+        except ValueError:
+            continue
+
+    required = USDT_PRICE * (10 ** USDT_DECIMALS)
+    if total_received < required:
+        return False, "واریز تأیید نشد: مبلغ دریافتی به آدرس مقصد کمتر از ۱۵ تتر است یا توکن با قرارداد مورد انتظار مطابقت ندارد.", None
+    return True, "تراکنش تأیید شد.", (total_received / (10 ** USDT_DECIMALS), tx_block)
+
+
+def activate_subscription_from_tx(user_id, tx_hash, amount, block_number):
+    now = datetime.now(ZoneInfo("UTC"))
+    with get_db_connection() as conn:
+        existing = conn.execute(
+            "SELECT user_id FROM bot_usdt_payments WHERE tx_hash = %s",
+            (tx_hash.lower(),)
+        ).fetchone()
+        if existing:
+            return False, "این TXID قبلاً برای یک اشتراک ثبت شده است."
+        conn.execute(
+            "INSERT INTO bot_usdt_payments (tx_hash, user_id, amount, block_number) VALUES (%s, %s, %s, %s)",
+            (tx_hash.lower(), int(user_id), amount, int(block_number))
+        )
+        row = conn.execute(
+            "SELECT expires_at FROM bot_subscriptions WHERE user_id = %s FOR UPDATE",
+            (int(user_id),)
+        ).fetchone()
+        base = row[0] if row and row[0] and row[0] > now else now
+        expiry = base + timedelta(days=30)
+        conn.execute(
+            """INSERT INTO bot_subscriptions (user_id, expires_at, updated_at)
+               VALUES (%s, %s, NOW())
+               ON CONFLICT (user_id) DO UPDATE
+               SET expires_at = EXCLUDED.expires_at, updated_at = NOW()""",
+            (int(user_id), expiry)
+        )
+        conn.commit()
+    return True, expiry
+
+
+def handle_subscription_txid(chat_id, text):
+    tx_hash = (text or "").strip()
+    ok, message, payment = verify_bsc_usdt_transfer(tx_hash)
+    if not ok:
+        send_message(chat_id, "⚠️ " + message)
+        return
+    amount, block_number = payment
+    try:
+        activated, result = activate_subscription_from_tx(chat_id, tx_hash, amount, block_number)
+    except Exception as exc:
+        print("SUBSCRIPTION ACTIVATION ERROR:", exc)
+        send_message(chat_id, "❌ تراکنش بررسی شد، اما ثبت اشتراک با خطا مواجه شد. لطفاً با مدیر تماس بگیرید و TXID را نگه دارید.")
+        return
+    if not activated:
+        send_message(chat_id, "⚠️ " + result)
+        return
+    expiry_text = result.astimezone(ZoneInfo("Asia/Tehran")).strftime("%Y-%m-%d %H:%M")
+    send_message(chat_id, f"✅ پرداخت شما با موفقیت تأیید شد.\nاشتراک شما ۳۰ روز فعال شد.\nتاریخ انقضا: {expiry_text} به وقت تهران")
+
+
+def handle_subscription_callback(callback, callback_id, callback_data):
+    user_id = (callback.get("from") or {}).get("id")
+    if not user_id:
+        answer_callback(callback_id, "خطا در شناسایی کاربر")
+        return True
+    if callback_data == "sub_home":
+        answer_callback(callback_id)
+        subscription_menu(user_id)
+        return True
+    if callback_data == "sub_pay":
+        answer_callback(callback_id)
+        subscription_payment_instructions(user_id)
+        return True
+    if callback_data == "sub_status":
+        expiry = get_subscription_expiry(user_id)
+        if expiry and expiry > datetime.now(ZoneInfo("UTC")):
+            expiry_text = expiry.astimezone(ZoneInfo("Asia/Tehran")).strftime("%Y-%m-%d %H:%M")
+            answer_callback(callback_id, "اشتراک فعال است")
+            send_message(user_id, f"✅ اشتراک شما فعال است.\nانقضا: {expiry_text} به وقت تهران")
+        else:
+            answer_callback(callback_id, "اشتراک فعال نیست")
+            subscription_menu(user_id)
+        return True
+    return False
+
+
 def get_db_connection():
     database_url = os.environ.get("DATABASE_URL")
 
@@ -496,6 +732,7 @@ def clear_test_navigation_message(chat_id, symbol):
 
 
 init_database()
+init_subscription_tables()
 
 print(
     "ROOYE V25 TEST MODE:",
@@ -2697,6 +2934,16 @@ def webhook():
             ""
         )
 
+        if handle_subscription_callback(callback, callback_id, callback_data):
+            return "ok"
+
+        callback_user_id = (callback.get("from") or {}).get("id")
+        if callback_user_id and not is_subscription_admin(callback_user_id):
+            if not subscription_is_active(callback_user_id):
+                answer_callback(callback_id, "برای استفاده از ربات ابتدا اشتراک تهیه کنید.")
+                subscription_menu(callback_user_id)
+                return "ok"
+
         # =====================================================
         # V26: ناوبری تحلیل قبلی/جدیدتر در همان پیام
         # =====================================================
@@ -3284,6 +3531,22 @@ def webhook():
     message_thread_id = message.get(
         "message_thread_id"
     )
+
+    # درگاه اشتراک: تمام پیام‌های خصوصی کاربران عادی قبل از رسیدن به امکانات ربات بررسی می‌شوند.
+    if chat_type == "private" and not is_subscription_admin(chat_id):
+        incoming_text = (message.get("text") or "").strip()
+        if incoming_text.lower() in {"/subscription", "اشتراک", "خرید اشتراک", "تمدید اشتراک"}:
+            subscription_menu(chat_id)
+            return "ok"
+        if incoming_text.lower() == "/start" and not subscription_is_active(chat_id):
+            subscription_menu(chat_id)
+            return "ok"
+        if re.fullmatch(r"0x[a-fA-F0-9]{64}", incoming_text):
+            handle_subscription_txid(chat_id, incoming_text)
+            return "ok"
+        if not subscription_is_active(chat_id):
+            subscription_menu(chat_id)
+            return "ok"
 
 
 # =====================================================
