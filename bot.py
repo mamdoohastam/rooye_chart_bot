@@ -2818,6 +2818,56 @@ def delete_message(chat_id, message_id):
         return False
 
 
+def get_analysis_photo_file_id(source_chat_id, source_message_id):
+    """شناسه فایل عکس تحلیل را از دیتابیس می‌خواند؛ بدون وابستگی به گروه حذف‌شده."""
+    try:
+        with get_db_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT photo_file_id
+                FROM analyses
+                WHERE chat_id = %s AND message_id = %s
+                  AND photo_file_id IS NOT NULL AND photo_file_id <> ''
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (source_chat_id, source_message_id),
+            ).fetchone()
+        return row[0] if row else None
+    except Exception as e:
+        print("ANALYSIS PHOTO FILE ID LOOKUP ERROR:", e)
+        return None
+
+
+def send_saved_analysis_photo(chat_id, photo_file_id, symbol, source_chat_id,
+                              source_message_id, has_previous, has_newer):
+    """عکس ذخیره‌شده را مستقیماً با file_id می‌فرستد؛ fallback برای منبع حذف‌شده."""
+    keyboard = analysis_navigation_keyboard(
+        symbol, source_chat_id, source_message_id, has_previous, has_newer
+    )
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+            json={
+                "chat_id": chat_id,
+                "photo": photo_file_id,
+                "reply_markup": keyboard,
+            },
+            timeout=15,
+        )
+        print("RESTORE PHOTO:", response.status_code, response.text[:700])
+        if not response.ok:
+            global LAST_COPY_ERROR
+            LAST_COPY_ERROR = response.text[:1000]
+            return None
+        result = response.json().get("result", {}) or {}
+        return result.get("message_id")
+    except Exception as e:
+        LAST_COPY_ERROR = str(e)
+        print("RESTORE PHOTO ERROR:", e)
+        return None
+
+
 def send_analysis_navigation_copy(
     chat_id,
     source_chat_id,
@@ -2836,7 +2886,20 @@ def send_analysis_navigation_copy(
     )
 
     if copied_message_id is None:
-        return None
+        # گروه منبع ممکن است حذف شده باشد. در این حالت عکس را با file_id
+        # ذخیره‌شده در جدول analyses مستقیماً از Telegram ارسال می‌کنیم.
+        saved_file_id = get_analysis_photo_file_id(source_chat_id, source_message_id)
+        if not saved_file_id:
+            print("ANALYSIS RECOVERY: no saved photo_file_id for", source_chat_id, source_message_id)
+            return None
+        restored_message_id = send_saved_analysis_photo(
+            chat_id, saved_file_id, symbol, source_chat_id,
+            source_message_id, has_previous, has_newer
+        )
+        if restored_message_id is None:
+            return None
+        print("ANALYSIS RESTORED FROM FILE_ID:", symbol, source_chat_id, source_message_id)
+        return restored_message_id
 
     keyboard = analysis_navigation_keyboard(
         symbol,
@@ -2934,15 +2997,7 @@ def webhook():
             ""
         )
 
-        if handle_subscription_callback(callback, callback_id, callback_data):
-            return "ok"
-
-        callback_user_id = (callback.get("from") or {}).get("id")
-        if callback_user_id and not is_subscription_admin(callback_user_id):
-            if not subscription_is_active(callback_user_id):
-                answer_callback(callback_id, "برای استفاده از ربات ابتدا اشتراک تهیه کنید.")
-                subscription_menu(callback_user_id)
-                return "ok"
+        # نسخه رایگان: هیچ محدودیت اشتراکی روی Callbackها اعمال نمی‌شود.
 
         # =====================================================
         # V26: ناوبری تحلیل قبلی/جدیدتر در همان پیام
@@ -3532,22 +3587,7 @@ def webhook():
         "message_thread_id"
     )
 
-    # درگاه اشتراک: تمام پیام‌های خصوصی کاربران عادی قبل از رسیدن به امکانات ربات بررسی می‌شوند.
-    if chat_type == "private" and not is_subscription_admin(chat_id):
-        incoming_text = (message.get("text") or "").strip()
-        if incoming_text.lower() in {"/subscription", "اشتراک", "خرید اشتراک", "تمدید اشتراک"}:
-            subscription_menu(chat_id)
-            return "ok"
-        if incoming_text.lower() == "/start" and not subscription_is_active(chat_id):
-            subscription_menu(chat_id)
-            return "ok"
-        if re.fullmatch(r"0x[a-fA-F0-9]{64}", incoming_text):
-            handle_subscription_txid(chat_id, incoming_text)
-            return "ok"
-        if not subscription_is_active(chat_id):
-            subscription_menu(chat_id)
-            return "ok"
-
+    # نسخه رایگان: پیام‌های کاربران بدون بررسی اشتراک به مسیر عادی ربات می‌رسند.
 
 # =====================================================
 # دستورهای دیتابیس
