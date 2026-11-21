@@ -544,6 +544,13 @@ def init_database():
             ADD COLUMN IF NOT EXISTS watchlist BOOLEAN NOT NULL DEFAULT FALSE
             """
         )
+        # آرشیو مستقل تحلیل‌ها: کپشن در کنار شناسه فایل تلگرام نگهداری می‌شود.
+        connection.execute(
+            """
+            ALTER TABLE analyses
+            ADD COLUMN IF NOT EXISTS caption TEXT
+            """
+        )
         connection.commit()
     with get_db_connection() as connection:
         connection.execute("SELECT 1")
@@ -884,6 +891,81 @@ def answer_callback(callback_id, text=None):
 
 LAST_COPY_ERROR = ""
 
+
+def get_analysis_archive_record(source_chat_id, source_message_id):
+    """رکورد آرشیوی عکس و کپشن تحلیل را مستقل از پیام گروه می‌خواند."""
+    try:
+        with get_db_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT photo_file_id, caption
+                FROM analyses
+                WHERE chat_id = %s AND message_id = %s
+                  AND photo_file_id IS NOT NULL AND photo_file_id <> ''
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (source_chat_id, source_message_id),
+            ).fetchone()
+        return row if row else None
+    except Exception as e:
+        print("ANALYSIS ARCHIVE LOOKUP ERROR:", e)
+        return None
+
+
+def send_archived_analysis(
+    target_chat_id,
+    source_chat_id,
+    source_message_id,
+    reply_to_message_id=None,
+    target_message_thread_id=None,
+    return_metadata=False,
+):
+    """تحلیل آرشیوشده را فقط یک‌بار با عکس و کپشن ارسال می‌کند."""
+    global LAST_COPY_ERROR
+    record = get_analysis_archive_record(source_chat_id, source_message_id)
+    if not record or not record[0]:
+        return None
+
+    photo_file_id, caption = record
+    payload = {
+        "chat_id": target_chat_id,
+        "photo": photo_file_id,
+    }
+    if caption:
+        payload["caption"] = caption
+    if reply_to_message_id is not None:
+        payload["reply_parameters"] = {"message_id": reply_to_message_id}
+    if target_message_thread_id is not None:
+        payload["message_thread_id"] = target_message_thread_id
+
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+            json=payload,
+            timeout=15,
+        )
+        print("SEND ARCHIVED ANALYSIS:", response.status_code, response.text[:700])
+        if not response.ok:
+            LAST_COPY_ERROR = response.text[:1000]
+            return None
+        result = response.json().get("result", {}) or {}
+        sent_id = result.get("message_id")
+        if sent_id is None:
+            LAST_COPY_ERROR = "Telegram response has no message_id"
+            return None
+        if return_metadata:
+            return {
+                "message_id": sent_id,
+                "message_thread_id": result.get("message_thread_id"),
+            }
+        return sent_id
+    except Exception as e:
+        LAST_COPY_ERROR = str(e)
+        print("SEND ARCHIVED ANALYSIS ERROR:", e)
+        return None
+
+
 def copy_analysis_message(
     target_chat_id,
     source_chat_id,
@@ -931,6 +1013,21 @@ def copy_analysis_message(
 
         if not response.ok:
             LAST_COPY_ERROR = response.text[:1000]
+            archived = send_archived_analysis(
+                target_chat_id,
+                source_chat_id,
+                source_message_id,
+                reply_to_message_id=reply_to_message_id,
+                target_message_thread_id=target_message_thread_id,
+                return_metadata=return_metadata,
+            )
+            if archived is not None:
+                print(
+                    "ANALYSIS RESTORED FROM DATABASE ARCHIVE:",
+                    source_chat_id,
+                    source_message_id,
+                )
+                return archived
             return None
 
         result = response.json().get("result", {}) or {}
@@ -939,7 +1036,15 @@ def copy_analysis_message(
         if copied_message_id is None:
             LAST_COPY_ERROR = response.text[:1000]
             print("COPY ERROR: Telegram response has no message_id")
-            return None
+            archived = send_archived_analysis(
+                target_chat_id,
+                source_chat_id,
+                source_message_id,
+                reply_to_message_id=reply_to_message_id,
+                target_message_thread_id=target_message_thread_id,
+                return_metadata=return_metadata,
+            )
+            return archived
 
         metadata = {
             "message_id": copied_message_id,
@@ -954,7 +1059,15 @@ def copy_analysis_message(
     except Exception as e:
         LAST_COPY_ERROR = str(e)
         print("COPY ERROR:", e)
-        return None
+        archived = send_archived_analysis(
+            target_chat_id,
+            source_chat_id,
+            source_message_id,
+            reply_to_message_id=reply_to_message_id,
+            target_message_thread_id=target_message_thread_id,
+            return_metadata=return_metadata,
+        )
+        return archived
 
 
 def save_analysis_copy(
@@ -1139,7 +1252,8 @@ def save_analysis(
     symbol,
     message_date,
     photo_file_id=None,
-    watchlist=False
+    watchlist=False,
+    caption=None
 ):
     date_text = datetime.fromtimestamp(
         message_date,
@@ -1157,9 +1271,15 @@ def save_analysis(
                 message_date,
                 date_text,
                 photo_file_id,
-                watchlist
+                watchlist,
+                caption
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            SELECT %s, %s, %s, %s, %s, %s, %s, %s
+            WHERE NOT EXISTS (
+                SELECT 1 FROM analyses
+                WHERE chat_id = %s AND message_id = %s
+                  AND UPPER(TRIM(symbol)) = %s
+            )
             """,
             (
                 chat_id,
@@ -1169,6 +1289,10 @@ def save_analysis(
                 date_text,
                 photo_file_id,
                 watchlist,
+                caption,
+                chat_id,
+                message_id,
+                symbol.upper().strip(),
             )
         )
 
@@ -2845,14 +2969,19 @@ def send_saved_analysis_photo(chat_id, photo_file_id, symbol, source_chat_id,
     keyboard = analysis_navigation_keyboard(
         symbol, source_chat_id, source_message_id, has_previous, has_newer
     )
+    archive_record = get_analysis_archive_record(source_chat_id, source_message_id)
+    caption = archive_record[1] if archive_record else None
+    payload = {
+        "chat_id": chat_id,
+        "photo": photo_file_id,
+        "reply_markup": keyboard,
+    }
+    if caption:
+        payload["caption"] = caption
     try:
         response = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-            json={
-                "chat_id": chat_id,
-                "photo": photo_file_id,
-                "reply_markup": keyboard,
-            },
+            json=payload,
             timeout=15,
         )
         print("RESTORE PHOTO:", response.status_code, response.text[:700])
@@ -3599,6 +3728,88 @@ def webhook():
     ).strip()
 
 
+    # حذف دستی ارز از واچ‌لیست؛ تاریخچه تحلیل‌ها حذف نمی‌شود.
+    remove_match = re.match(
+        r"^/remove(?:@[A-Za-z0-9_]+)?\\s+(.+)$",
+        text_for_command,
+        flags=re.IGNORECASE,
+    )
+    if remove_match:
+        if chat_type != "private" or not is_admin_user(chat_id):
+            send_message(chat_id, "⛔ این دستور فقط در گفت‌وگوی خصوصی و برای مدیر ربات فعال است.")
+            return "ok"
+
+        raw_symbols = remove_match.group(1).strip()
+        raw_symbols = re.sub(
+            r"\\bfrom\\s+watchlist\\b|\\bwatchlist\\b|از\\s+واچ.?لیست",
+            "",
+            raw_symbols,
+            flags=re.IGNORECASE,
+        ).strip(" ,؛")
+        candidates = [
+            part.strip()
+            for part in re.split(r"[,،;؛\\s]+", raw_symbols)
+            if part.strip()
+        ]
+
+        symbols_to_remove = []
+        for item in candidates:
+            normalized = normalize_text(item)
+            symbol = ALIASES.get(normalized, normalized.upper())
+            if re.fullmatch(r"[A-Z0-9]{2,15}", symbol):
+                symbols_to_remove.append(symbol)
+
+        symbols_to_remove = list(dict.fromkeys(symbols_to_remove))
+        if not symbols_to_remove:
+            send_message(
+                chat_id,
+                "❌ نماد ارز مشخص نیست. مثال:\n/remove SOL from watchlist\n/remove SOL, BTC"
+            )
+            return "ok"
+
+        try:
+            with get_db_connection() as connection:
+                removed = []
+                not_found = []
+                for symbol in symbols_to_remove:
+                    result = connection.execute(
+                        """
+                        UPDATE analyses
+                        SET watchlist = FALSE
+                        WHERE UPPER(TRIM(symbol)) = %s
+                          AND watchlist = TRUE
+                        RETURNING id
+                        """,
+                        (symbol,),
+                    ).fetchall()
+                    if result:
+                        removed.append((symbol, len(result)))
+                    else:
+                        not_found.append(symbol)
+                connection.commit()
+        except Exception as e:
+            print("WATCHLIST REMOVE ERROR:", e)
+            send_message(chat_id, "❌ هنگام به‌روزرسانی واچ‌لیست خطایی رخ داد.")
+            return "ok"
+
+        reply = "⭐ نتیجه به‌روزرسانی واچ‌لیست:\\n"
+        if removed:
+            reply += "\\n".join(
+                f"✅ {symbol}: از واچ‌لیست خارج شد ({count} رکورد)"
+                for symbol, count in removed
+            )
+        if not_found:
+            if removed:
+                reply += "\\n"
+            reply += "\\n".join(
+                f"ℹ️ {symbol}: در واچ‌لیست فعلی نبود"
+                for symbol in not_found
+            )
+        reply += "\\n\\n📚 تاریخچه تحلیل‌ها حفظ شده است."
+        send_message(chat_id, reply)
+        return "ok"
+
+
     if (
         chat_type == "private"
         and text_for_command.startswith("/priceusers")
@@ -3946,7 +4157,8 @@ def webhook():
                 symbol,
                 message_date,
                 photo_file_id,
-                is_watchlist
+                is_watchlist,
+                caption=caption
             )
 
         return "ok"
