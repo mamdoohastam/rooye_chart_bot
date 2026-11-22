@@ -234,242 +234,6 @@ DISPLAY_NAMES = {
 # دیتابیس PostgreSQL / Supabase
 # =========================================================
 
-
-
-# =========================================================
-# اشتراک پولی و پرداخت خودکار USDT روی BSC
-# =========================================================
-SUBSCRIPTION_OWNER_ID = int(os.environ.get("SUBSCRIPTION_OWNER_ID", "6738956694"))
-SUBSCRIPTION_WALLET = os.environ.get(
-    "USDT_BSC_WALLET", "0x67b9c74e8ebf7586bf0afdf6995921d1fd3c62da"
-).strip()
-USDT_BSC_CONTRACT = os.environ.get(
-    "USDT_BSC_CONTRACT", "0x55d398326f99059fF775485246999027B3197955"
-).strip().lower()
-USDT_PRICE = 15
-USDT_DECIMALS = 18
-BSC_RPC_URLS = [
-    x.strip() for x in os.environ.get(
-        "BSC_RPC_URLS",
-        "https://bsc-dataseed.binance.org,https://bsc-dataseed1.binance.org,https://bsc-dataseed2.binance.org"
-    ).split(",") if x.strip()
-]
-TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-
-
-def init_subscription_tables():
-    with get_db_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS bot_subscriptions (
-                user_id BIGINT PRIMARY KEY,
-                expires_at TIMESTAMPTZ NOT NULL,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS bot_usdt_payments (
-                tx_hash TEXT PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                amount NUMERIC(30, 18) NOT NULL,
-                block_number BIGINT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_subscriptions_expiry ON bot_subscriptions (expires_at)")
-        conn.commit()
-
-
-def get_subscription_expiry(user_id):
-    with get_db_connection() as conn:
-        row = conn.execute(
-            "SELECT expires_at FROM bot_subscriptions WHERE user_id = %s",
-            (int(user_id),)
-        ).fetchone()
-    return row[0] if row else None
-
-
-def is_subscription_admin(user_id):
-    try:
-        return int(user_id) == SUBSCRIPTION_OWNER_ID or is_admin_user(user_id)
-    except (TypeError, ValueError):
-        return False
-
-
-def subscription_is_active(user_id):
-    if is_subscription_admin(user_id):
-        return True
-    expiry = get_subscription_expiry(user_id)
-    return bool(expiry and expiry > datetime.now(ZoneInfo("UTC")))
-
-
-def subscription_menu(chat_id):
-    expiry = get_subscription_expiry(chat_id)
-    now = datetime.now(ZoneInfo("UTC"))
-    if expiry and expiry > now:
-        expiry_text = expiry.astimezone(ZoneInfo("Asia/Tehran")).strftime("%Y-%m-%d %H:%M")
-        status = f"وضعیت: فعال تا {expiry_text} به وقت تهران"
-    else:
-        status = "وضعیت: غیرفعال؛ برای استفاده از امکانات ربات اشتراک تهیه کنید."
-    send_message(
-        chat_id,
-        "💳 اشتراک ربات روی چارت\n\n"
-        "هزینه اشتراک: ۱۵ USDT در ماه\n"
-        "شبکه پرداخت: BNB Smart Chain (BEP20)\n"
-        "مدت اشتراک: ۳۰ روز\n\n"
-        f"{status}\n\n"
-        "برای پرداخت، دکمه زیر را بزنید.",
-        reply_markup={"inline_keyboard": [
-            [{"text": "💎 پرداخت ۱۵ تتر", "callback_data": "sub_pay"}],
-            [{"text": "🔄 بررسی وضعیت اشتراک", "callback_data": "sub_status"}],
-        ]}
-    )
-
-
-def subscription_payment_instructions(chat_id):
-    send_message(
-        chat_id,
-        "💎 پرداخت اشتراک روی چارت\n\n"
-        "مبلغ: 15 USDT\n"
-        "شبکه: BSC (BEP20)\n\n"
-        f"آدرس واریز:\n{SUBSCRIPTION_WALLET}\n\n"
-        "۱) دقیقاً روی شبکه BSC واریز کنید.\n"
-        "۲) پس از ثبت تراکنش، هش تراکنش (TXID) را همین‌جا ارسال کنید.\n"
-        "۳) ربات تراکنش را روی بلاک‌چین بررسی می‌کند و در صورت تأیید، اشتراک را خودکار ۳۰ روز فعال می‌کند.\n\n"
-        "⚠️ انتقال روی شبکه یا توکن اشتباه قابل تأیید نیست. فقط TXID را بفرستید؛ عبارت بازیابی یا کلید خصوصی را هرگز ارسال نکنید.",
-        reply_markup={"inline_keyboard": [[{"text": "↩️ بازگشت", "callback_data": "sub_home"}]]}
-    )
-
-
-def rpc_call(method, params):
-    last_error = None
-    for url in BSC_RPC_URLS:
-        try:
-            response = requests.post(
-                url,
-                json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-                timeout=12,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            if payload.get("error"):
-                last_error = payload["error"]
-                continue
-            return payload.get("result")
-        except Exception as exc:
-            last_error = exc
-    raise RuntimeError(f"BSC RPC unavailable: {last_error}")
-
-
-def verify_bsc_usdt_transfer(tx_hash):
-    if not re.fullmatch(r"0x[a-fA-F0-9]{64}", tx_hash or ""):
-        return False, "فرمت TXID معتبر نیست.", None
-    receipt = rpc_call("eth_getTransactionReceipt", [tx_hash])
-    if receipt is None:
-        return False, "تراکنش هنوز در شبکه پیدا نشده است. چند دقیقه بعد دوباره TXID را ارسال کنید.", None
-    if receipt.get("status", "0x0").lower() != "0x1":
-        return False, "این تراکنش موفق نبوده است.", None
-    latest_hex = rpc_call("eth_blockNumber", [])
-    latest_block = int(latest_hex, 16)
-    tx_block = int(receipt.get("blockNumber", "0x0"), 16)
-    if latest_block - tx_block + 1 < 12:
-        return False, "تراکنش ثبت شده، اما هنوز ۱۲ تأیید شبکه را نگرفته است. کمی بعد همین TXID را دوباره ارسال کنید.", None
-
-    expected_to = SUBSCRIPTION_WALLET.lower().replace("0x", "").rjust(64, "0")
-    total_received = 0
-    for log in receipt.get("logs", []):
-        topics = log.get("topics", [])
-        if (log.get("address", "").lower() != USDT_BSC_CONTRACT
-                or len(topics) < 3
-                or topics[0].lower() != TRANSFER_TOPIC
-                or topics[2].lower().replace("0x", "") != expected_to):
-            continue
-        try:
-            total_received += int(log.get("data", "0x0"), 16)
-        except ValueError:
-            continue
-
-    required = USDT_PRICE * (10 ** USDT_DECIMALS)
-    if total_received < required:
-        return False, "واریز تأیید نشد: مبلغ دریافتی به آدرس مقصد کمتر از ۱۵ تتر است یا توکن با قرارداد مورد انتظار مطابقت ندارد.", None
-    return True, "تراکنش تأیید شد.", (total_received / (10 ** USDT_DECIMALS), tx_block)
-
-
-def activate_subscription_from_tx(user_id, tx_hash, amount, block_number):
-    now = datetime.now(ZoneInfo("UTC"))
-    with get_db_connection() as conn:
-        existing = conn.execute(
-            "SELECT user_id FROM bot_usdt_payments WHERE tx_hash = %s",
-            (tx_hash.lower(),)
-        ).fetchone()
-        if existing:
-            return False, "این TXID قبلاً برای یک اشتراک ثبت شده است."
-        conn.execute(
-            "INSERT INTO bot_usdt_payments (tx_hash, user_id, amount, block_number) VALUES (%s, %s, %s, %s)",
-            (tx_hash.lower(), int(user_id), amount, int(block_number))
-        )
-        row = conn.execute(
-            "SELECT expires_at FROM bot_subscriptions WHERE user_id = %s FOR UPDATE",
-            (int(user_id),)
-        ).fetchone()
-        base = row[0] if row and row[0] and row[0] > now else now
-        expiry = base + timedelta(days=30)
-        conn.execute(
-            """INSERT INTO bot_subscriptions (user_id, expires_at, updated_at)
-               VALUES (%s, %s, NOW())
-               ON CONFLICT (user_id) DO UPDATE
-               SET expires_at = EXCLUDED.expires_at, updated_at = NOW()""",
-            (int(user_id), expiry)
-        )
-        conn.commit()
-    return True, expiry
-
-
-def handle_subscription_txid(chat_id, text):
-    tx_hash = (text or "").strip()
-    ok, message, payment = verify_bsc_usdt_transfer(tx_hash)
-    if not ok:
-        send_message(chat_id, "⚠️ " + message)
-        return
-    amount, block_number = payment
-    try:
-        activated, result = activate_subscription_from_tx(chat_id, tx_hash, amount, block_number)
-    except Exception as exc:
-        print("SUBSCRIPTION ACTIVATION ERROR:", exc)
-        send_message(chat_id, "❌ تراکنش بررسی شد، اما ثبت اشتراک با خطا مواجه شد. لطفاً با مدیر تماس بگیرید و TXID را نگه دارید.")
-        return
-    if not activated:
-        send_message(chat_id, "⚠️ " + result)
-        return
-    expiry_text = result.astimezone(ZoneInfo("Asia/Tehran")).strftime("%Y-%m-%d %H:%M")
-    send_message(chat_id, f"✅ پرداخت شما با موفقیت تأیید شد.\nاشتراک شما ۳۰ روز فعال شد.\nتاریخ انقضا: {expiry_text} به وقت تهران")
-
-
-def handle_subscription_callback(callback, callback_id, callback_data):
-    user_id = (callback.get("from") or {}).get("id")
-    if not user_id:
-        answer_callback(callback_id, "خطا در شناسایی کاربر")
-        return True
-    if callback_data == "sub_home":
-        answer_callback(callback_id)
-        subscription_menu(user_id)
-        return True
-    if callback_data == "sub_pay":
-        answer_callback(callback_id)
-        subscription_payment_instructions(user_id)
-        return True
-    if callback_data == "sub_status":
-        expiry = get_subscription_expiry(user_id)
-        if expiry and expiry > datetime.now(ZoneInfo("UTC")):
-            expiry_text = expiry.astimezone(ZoneInfo("Asia/Tehran")).strftime("%Y-%m-%d %H:%M")
-            answer_callback(callback_id, "اشتراک فعال است")
-            send_message(user_id, f"✅ اشتراک شما فعال است.\nانقضا: {expiry_text} به وقت تهران")
-        else:
-            answer_callback(callback_id, "اشتراک فعال نیست")
-            subscription_menu(user_id)
-        return True
-    return False
-
-
 def get_db_connection():
     database_url = os.environ.get("DATABASE_URL")
 
@@ -542,13 +306,6 @@ def init_database():
             """
             ALTER TABLE analyses
             ADD COLUMN IF NOT EXISTS watchlist BOOLEAN NOT NULL DEFAULT FALSE
-            """
-        )
-        # آرشیو مستقل تحلیل‌ها: کپشن در کنار شناسه فایل تلگرام نگهداری می‌شود.
-        connection.execute(
-            """
-            ALTER TABLE analyses
-            ADD COLUMN IF NOT EXISTS caption TEXT
             """
         )
         connection.commit()
@@ -739,7 +496,6 @@ def clear_test_navigation_message(chat_id, symbol):
 
 
 init_database()
-init_subscription_tables()
 
 print(
     "ROOYE V25 TEST MODE:",
@@ -891,81 +647,6 @@ def answer_callback(callback_id, text=None):
 
 LAST_COPY_ERROR = ""
 
-
-def get_analysis_archive_record(source_chat_id, source_message_id):
-    """رکورد آرشیوی عکس و کپشن تحلیل را مستقل از پیام گروه می‌خواند."""
-    try:
-        with get_db_connection() as connection:
-            row = connection.execute(
-                """
-                SELECT photo_file_id, caption
-                FROM analyses
-                WHERE chat_id = %s AND message_id = %s
-                  AND photo_file_id IS NOT NULL AND photo_file_id <> ''
-                ORDER BY id DESC
-                LIMIT 1
-                """,
-                (source_chat_id, source_message_id),
-            ).fetchone()
-        return row if row else None
-    except Exception as e:
-        print("ANALYSIS ARCHIVE LOOKUP ERROR:", e)
-        return None
-
-
-def send_archived_analysis(
-    target_chat_id,
-    source_chat_id,
-    source_message_id,
-    reply_to_message_id=None,
-    target_message_thread_id=None,
-    return_metadata=False,
-):
-    """تحلیل آرشیوشده را فقط یک‌بار با عکس و کپشن ارسال می‌کند."""
-    global LAST_COPY_ERROR
-    record = get_analysis_archive_record(source_chat_id, source_message_id)
-    if not record or not record[0]:
-        return None
-
-    photo_file_id, caption = record
-    payload = {
-        "chat_id": target_chat_id,
-        "photo": photo_file_id,
-    }
-    if caption:
-        payload["caption"] = caption
-    if reply_to_message_id is not None:
-        payload["reply_parameters"] = {"message_id": reply_to_message_id}
-    if target_message_thread_id is not None:
-        payload["message_thread_id"] = target_message_thread_id
-
-    try:
-        response = requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-            json=payload,
-            timeout=15,
-        )
-        print("SEND ARCHIVED ANALYSIS:", response.status_code, response.text[:700])
-        if not response.ok:
-            LAST_COPY_ERROR = response.text[:1000]
-            return None
-        result = response.json().get("result", {}) or {}
-        sent_id = result.get("message_id")
-        if sent_id is None:
-            LAST_COPY_ERROR = "Telegram response has no message_id"
-            return None
-        if return_metadata:
-            return {
-                "message_id": sent_id,
-                "message_thread_id": result.get("message_thread_id"),
-            }
-        return sent_id
-    except Exception as e:
-        LAST_COPY_ERROR = str(e)
-        print("SEND ARCHIVED ANALYSIS ERROR:", e)
-        return None
-
-
 def copy_analysis_message(
     target_chat_id,
     source_chat_id,
@@ -1013,21 +694,6 @@ def copy_analysis_message(
 
         if not response.ok:
             LAST_COPY_ERROR = response.text[:1000]
-            archived = send_archived_analysis(
-                target_chat_id,
-                source_chat_id,
-                source_message_id,
-                reply_to_message_id=reply_to_message_id,
-                target_message_thread_id=target_message_thread_id,
-                return_metadata=return_metadata,
-            )
-            if archived is not None:
-                print(
-                    "ANALYSIS RESTORED FROM DATABASE ARCHIVE:",
-                    source_chat_id,
-                    source_message_id,
-                )
-                return archived
             return None
 
         result = response.json().get("result", {}) or {}
@@ -1036,15 +702,7 @@ def copy_analysis_message(
         if copied_message_id is None:
             LAST_COPY_ERROR = response.text[:1000]
             print("COPY ERROR: Telegram response has no message_id")
-            archived = send_archived_analysis(
-                target_chat_id,
-                source_chat_id,
-                source_message_id,
-                reply_to_message_id=reply_to_message_id,
-                target_message_thread_id=target_message_thread_id,
-                return_metadata=return_metadata,
-            )
-            return archived
+            return None
 
         metadata = {
             "message_id": copied_message_id,
@@ -1059,15 +717,7 @@ def copy_analysis_message(
     except Exception as e:
         LAST_COPY_ERROR = str(e)
         print("COPY ERROR:", e)
-        archived = send_archived_analysis(
-            target_chat_id,
-            source_chat_id,
-            source_message_id,
-            reply_to_message_id=reply_to_message_id,
-            target_message_thread_id=target_message_thread_id,
-            return_metadata=return_metadata,
-        )
-        return archived
+        return None
 
 
 def save_analysis_copy(
@@ -1252,8 +902,7 @@ def save_analysis(
     symbol,
     message_date,
     photo_file_id=None,
-    watchlist=False,
-    caption=None
+    watchlist=False
 ):
     date_text = datetime.fromtimestamp(
         message_date,
@@ -1271,15 +920,9 @@ def save_analysis(
                 message_date,
                 date_text,
                 photo_file_id,
-                watchlist,
-                caption
+                watchlist
             )
-            SELECT %s, %s, %s, %s, %s, %s, %s, %s
-            WHERE NOT EXISTS (
-                SELECT 1 FROM analyses
-                WHERE chat_id = %s AND message_id = %s
-                  AND UPPER(TRIM(symbol)) = %s
-            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 chat_id,
@@ -1289,10 +932,6 @@ def save_analysis(
                 date_text,
                 photo_file_id,
                 watchlist,
-                caption,
-                chat_id,
-                message_id,
-                symbol.upper().strip(),
             )
         )
 
@@ -2942,61 +2581,6 @@ def delete_message(chat_id, message_id):
         return False
 
 
-def get_analysis_photo_file_id(source_chat_id, source_message_id):
-    """شناسه فایل عکس تحلیل را از دیتابیس می‌خواند؛ بدون وابستگی به گروه حذف‌شده."""
-    try:
-        with get_db_connection() as connection:
-            row = connection.execute(
-                """
-                SELECT photo_file_id
-                FROM analyses
-                WHERE chat_id = %s AND message_id = %s
-                  AND photo_file_id IS NOT NULL AND photo_file_id <> ''
-                ORDER BY id DESC
-                LIMIT 1
-                """,
-                (source_chat_id, source_message_id),
-            ).fetchone()
-        return row[0] if row else None
-    except Exception as e:
-        print("ANALYSIS PHOTO FILE ID LOOKUP ERROR:", e)
-        return None
-
-
-def send_saved_analysis_photo(chat_id, photo_file_id, symbol, source_chat_id,
-                              source_message_id, has_previous, has_newer):
-    """عکس ذخیره‌شده را مستقیماً با file_id می‌فرستد؛ fallback برای منبع حذف‌شده."""
-    keyboard = analysis_navigation_keyboard(
-        symbol, source_chat_id, source_message_id, has_previous, has_newer
-    )
-    archive_record = get_analysis_archive_record(source_chat_id, source_message_id)
-    caption = archive_record[1] if archive_record else None
-    payload = {
-        "chat_id": chat_id,
-        "photo": photo_file_id,
-        "reply_markup": keyboard,
-    }
-    if caption:
-        payload["caption"] = caption
-    try:
-        response = requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-            json=payload,
-            timeout=15,
-        )
-        print("RESTORE PHOTO:", response.status_code, response.text[:700])
-        if not response.ok:
-            global LAST_COPY_ERROR
-            LAST_COPY_ERROR = response.text[:1000]
-            return None
-        result = response.json().get("result", {}) or {}
-        return result.get("message_id")
-    except Exception as e:
-        LAST_COPY_ERROR = str(e)
-        print("RESTORE PHOTO ERROR:", e)
-        return None
-
-
 def send_analysis_navigation_copy(
     chat_id,
     source_chat_id,
@@ -3015,20 +2599,7 @@ def send_analysis_navigation_copy(
     )
 
     if copied_message_id is None:
-        # گروه منبع ممکن است حذف شده باشد. در این حالت عکس را با file_id
-        # ذخیره‌شده در جدول analyses مستقیماً از Telegram ارسال می‌کنیم.
-        saved_file_id = get_analysis_photo_file_id(source_chat_id, source_message_id)
-        if not saved_file_id:
-            print("ANALYSIS RECOVERY: no saved photo_file_id for", source_chat_id, source_message_id)
-            return None
-        restored_message_id = send_saved_analysis_photo(
-            chat_id, saved_file_id, symbol, source_chat_id,
-            source_message_id, has_previous, has_newer
-        )
-        if restored_message_id is None:
-            return None
-        print("ANALYSIS RESTORED FROM FILE_ID:", symbol, source_chat_id, source_message_id)
-        return restored_message_id
+        return None
 
     keyboard = analysis_navigation_keyboard(
         symbol,
@@ -3125,8 +2696,6 @@ def webhook():
             "data",
             ""
         )
-
-        # نسخه رایگان: هیچ محدودیت اشتراکی روی Callbackها اعمال نمی‌شود.
 
         # =====================================================
         # V26: ناوبری تحلیل قبلی/جدیدتر در همان پیام
@@ -3716,7 +3285,6 @@ def webhook():
         "message_thread_id"
     )
 
-    # نسخه رایگان: پیام‌های کاربران بدون بررسی اشتراک به مسیر عادی ربات می‌رسند.
 
 # =====================================================
 # دستورهای دیتابیس
@@ -3728,7 +3296,7 @@ def webhook():
     ).strip()
 
 
-    # حذف دستی ارز از واچ‌لیست؛ تاریخچه تحلیل‌ها حذف نمی‌شود.
+    # حذف دستی یک یا چند نماد از واچ‌لیست (فقط مدیر)
     remove_match = re.match(
         r"^/remove(?:@[A-Za-z0-9_]+)?\\s+(.+)$",
         text_for_command,
@@ -3736,43 +3304,45 @@ def webhook():
     )
     if remove_match:
         if chat_type != "private" or not is_admin_user(chat_id):
-            send_message(chat_id, "⛔ این دستور فقط در گفت‌وگوی خصوصی و برای مدیر ربات فعال است.")
+            send_message(
+                chat_id,
+                "⛔ این دستور فقط در گفت‌وگوی خصوصی و برای مدیر ربات فعال است."
+            )
             return "ok"
 
         raw_symbols = remove_match.group(1).strip()
         raw_symbols = re.sub(
-            r"\\bfrom\\s+watchlist\\b|\\bwatchlist\\b|از\\s+واچ.?لیست",
+            r"\\bfrom\\s+watchlist\\b|\\bwatchlist\\b",
             "",
             raw_symbols,
             flags=re.IGNORECASE,
         ).strip(" ,؛")
-        candidates = [
-            part.strip()
-            for part in re.split(r"[,،;؛\\s]+", raw_symbols)
-            if part.strip()
-        ]
 
-        symbols_to_remove = []
-        for item in candidates:
+        symbols = []
+        for item in re.split(r"[,،;؛\\s]+", raw_symbols):
+            item = item.strip()
+            if not item:
+                continue
             normalized = normalize_text(item)
             symbol = ALIASES.get(normalized, normalized.upper())
             if re.fullmatch(r"[A-Z0-9]{2,15}", symbol):
-                symbols_to_remove.append(symbol)
+                symbols.append(symbol)
 
-        symbols_to_remove = list(dict.fromkeys(symbols_to_remove))
-        if not symbols_to_remove:
+        symbols = list(dict.fromkeys(symbols))
+        if not symbols:
             send_message(
                 chat_id,
-                "❌ نماد ارز مشخص نیست. مثال:\n/remove SOL from watchlist\n/remove SOL, BTC"
+                "❌ نماد ارز مشخص نیست. مثال:\\n"
+                "/remove RIVER from watchlist"
             )
             return "ok"
 
         try:
+            removed = []
+            not_found = []
             with get_db_connection() as connection:
-                removed = []
-                not_found = []
-                for symbol in symbols_to_remove:
-                    result = connection.execute(
+                for symbol in symbols:
+                    rows = connection.execute(
                         """
                         UPDATE analyses
                         SET watchlist = FALSE
@@ -3782,31 +3352,33 @@ def webhook():
                         """,
                         (symbol,),
                     ).fetchall()
-                    if result:
-                        removed.append((symbol, len(result)))
+                    if rows:
+                        removed.append((symbol, len(rows)))
                     else:
                         not_found.append(symbol)
                 connection.commit()
+
+            response_text = "⭐ نتیجه به‌روزرسانی واچ‌لیست:\\n"
+            if removed:
+                response_text += "\\n".join(
+                    f"✅ {symbol}: از واچ‌لیست خارج شد ({count} رکورد)"
+                    for symbol, count in removed
+                )
+            if not_found:
+                if removed:
+                    response_text += "\\n"
+                response_text += "\\n".join(
+                    f"ℹ️ {symbol}: در واچ‌لیست فعلی نبود"
+                    for symbol in not_found
+                )
+            response_text += "\\n\\n📚 تاریخچه تحلیل‌ها حذف نشده است."
+            send_message(chat_id, response_text)
         except Exception as e:
             print("WATCHLIST REMOVE ERROR:", e)
-            send_message(chat_id, "❌ هنگام به‌روزرسانی واچ‌لیست خطایی رخ داد.")
-            return "ok"
-
-        reply = "⭐ نتیجه به‌روزرسانی واچ‌لیست:\\n"
-        if removed:
-            reply += "\\n".join(
-                f"✅ {symbol}: از واچ‌لیست خارج شد ({count} رکورد)"
-                for symbol, count in removed
+            send_message(
+                chat_id,
+                "❌ خطا در به‌روزرسانی واچ‌لیست. جزئیات در لاگ Render ثبت شد."
             )
-        if not_found:
-            if removed:
-                reply += "\\n"
-            reply += "\\n".join(
-                f"ℹ️ {symbol}: در واچ‌لیست فعلی نبود"
-                for symbol in not_found
-            )
-        reply += "\\n\\n📚 تاریخچه تحلیل‌ها حفظ شده است."
-        send_message(chat_id, reply)
         return "ok"
 
 
@@ -4157,8 +3729,7 @@ def webhook():
                 symbol,
                 message_date,
                 photo_file_id,
-                is_watchlist,
-                caption=caption
+                is_watchlist
             )
 
         return "ok"
