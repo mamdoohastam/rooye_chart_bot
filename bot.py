@@ -3298,7 +3298,7 @@ def webhook():
 
     # حذف دستی یک یا چند نماد از واچ‌لیست (فقط مدیر)
     remove_match = re.match(
-        r"^/remove(?:@[A-Za-z0-9_]+)?\\s+(.+)$",
+        r"^/remove(?:@[A-Za-z0-9_]+)?\s+(.+)$",
         text_for_command,
         flags=re.IGNORECASE,
     )
@@ -3312,14 +3312,14 @@ def webhook():
 
         raw_symbols = remove_match.group(1).strip()
         raw_symbols = re.sub(
-            r"\\bfrom\\s+watchlist\\b|\\bwatchlist\\b",
+            r"\bfrom\s+watchlist\b|\bwatchlist\b",
             "",
             raw_symbols,
             flags=re.IGNORECASE,
         ).strip(" ,؛")
 
         symbols = []
-        for item in re.split(r"[,،;؛\\s]+", raw_symbols):
+        for item in re.split(r"[,،;؛\s]+", raw_symbols):
             item = item.strip()
             if not item:
                 continue
@@ -3332,7 +3332,7 @@ def webhook():
         if not symbols:
             send_message(
                 chat_id,
-                "❌ نماد ارز مشخص نیست. مثال:\\n"
+                "❌ نماد ارز مشخص نیست. مثال:\n"
                 "/remove RIVER from watchlist"
             )
             return "ok"
@@ -3358,20 +3358,20 @@ def webhook():
                         not_found.append(symbol)
                 connection.commit()
 
-            response_text = "⭐ نتیجه به‌روزرسانی واچ‌لیست:\\n"
+            response_text = "⭐ نتیجه به‌روزرسانی واچ‌لیست:\n"
             if removed:
-                response_text += "\\n".join(
+                response_text += "\n".join(
                     f"✅ {symbol}: از واچ‌لیست خارج شد ({count} رکورد)"
                     for symbol, count in removed
                 )
             if not_found:
                 if removed:
-                    response_text += "\\n"
-                response_text += "\\n".join(
+                    response_text += "\n"
+                response_text += "\n".join(
                     f"ℹ️ {symbol}: در واچ‌لیست فعلی نبود"
                     for symbol in not_found
                 )
-            response_text += "\\n\\n📚 تاریخچه تحلیل‌ها حذف نشده است."
+            response_text += "\n\n📚 تاریخچه تحلیل‌ها حذف نشده است."
             send_message(chat_id, response_text)
         except Exception as e:
             print("WATCHLIST REMOVE ERROR:", e)
