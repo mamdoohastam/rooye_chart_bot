@@ -234,6 +234,242 @@ DISPLAY_NAMES = {
 # دیتابیس PostgreSQL / Supabase
 # =========================================================
 
+
+
+# =========================================================
+# اشتراک پولی و پرداخت خودکار USDT روی BSC
+# =========================================================
+SUBSCRIPTION_OWNER_ID = int(os.environ.get("SUBSCRIPTION_OWNER_ID", "6738956694"))
+SUBSCRIPTION_WALLET = os.environ.get(
+    "USDT_BSC_WALLET", "0x67b9c74e8ebf7586bf0afdf6995921d1fd3c62da"
+).strip()
+USDT_BSC_CONTRACT = os.environ.get(
+    "USDT_BSC_CONTRACT", "0x55d398326f99059fF775485246999027B3197955"
+).strip().lower()
+USDT_PRICE = 15
+USDT_DECIMALS = 18
+BSC_RPC_URLS = [
+    x.strip() for x in os.environ.get(
+        "BSC_RPC_URLS",
+        "https://bsc-dataseed.binance.org,https://bsc-dataseed1.binance.org,https://bsc-dataseed2.binance.org"
+    ).split(",") if x.strip()
+]
+TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+
+def init_subscription_tables():
+    with get_db_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_subscriptions (
+                user_id BIGINT PRIMARY KEY,
+                expires_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_usdt_payments (
+                tx_hash TEXT PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                amount NUMERIC(30, 18) NOT NULL,
+                block_number BIGINT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_subscriptions_expiry ON bot_subscriptions (expires_at)")
+        conn.commit()
+
+
+def get_subscription_expiry(user_id):
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT expires_at FROM bot_subscriptions WHERE user_id = %s",
+            (int(user_id),)
+        ).fetchone()
+    return row[0] if row else None
+
+
+def is_subscription_admin(user_id):
+    try:
+        return int(user_id) == SUBSCRIPTION_OWNER_ID or is_admin_user(user_id)
+    except (TypeError, ValueError):
+        return False
+
+
+def subscription_is_active(user_id):
+    if is_subscription_admin(user_id):
+        return True
+    expiry = get_subscription_expiry(user_id)
+    return bool(expiry and expiry > datetime.now(ZoneInfo("UTC")))
+
+
+def subscription_menu(chat_id):
+    expiry = get_subscription_expiry(chat_id)
+    now = datetime.now(ZoneInfo("UTC"))
+    if expiry and expiry > now:
+        expiry_text = expiry.astimezone(ZoneInfo("Asia/Tehran")).strftime("%Y-%m-%d %H:%M")
+        status = f"وضعیت: فعال تا {expiry_text} به وقت تهران"
+    else:
+        status = "وضعیت: غیرفعال؛ برای استفاده از امکانات ربات اشتراک تهیه کنید."
+    send_message(
+        chat_id,
+        "💳 اشتراک ربات روی چارت\n\n"
+        "هزینه اشتراک: ۱۵ USDT در ماه\n"
+        "شبکه پرداخت: BNB Smart Chain (BEP20)\n"
+        "مدت اشتراک: ۳۰ روز\n\n"
+        f"{status}\n\n"
+        "برای پرداخت، دکمه زیر را بزنید.",
+        reply_markup={"inline_keyboard": [
+            [{"text": "💎 پرداخت ۱۵ تتر", "callback_data": "sub_pay"}],
+            [{"text": "🔄 بررسی وضعیت اشتراک", "callback_data": "sub_status"}],
+        ]}
+    )
+
+
+def subscription_payment_instructions(chat_id):
+    send_message(
+        chat_id,
+        "💎 پرداخت اشتراک روی چارت\n\n"
+        "مبلغ: 15 USDT\n"
+        "شبکه: BSC (BEP20)\n\n"
+        f"آدرس واریز:\n{SUBSCRIPTION_WALLET}\n\n"
+        "۱) دقیقاً روی شبکه BSC واریز کنید.\n"
+        "۲) پس از ثبت تراکنش، هش تراکنش (TXID) را همین‌جا ارسال کنید.\n"
+        "۳) ربات تراکنش را روی بلاک‌چین بررسی می‌کند و در صورت تأیید، اشتراک را خودکار ۳۰ روز فعال می‌کند.\n\n"
+        "⚠️ انتقال روی شبکه یا توکن اشتباه قابل تأیید نیست. فقط TXID را بفرستید؛ عبارت بازیابی یا کلید خصوصی را هرگز ارسال نکنید.",
+        reply_markup={"inline_keyboard": [[{"text": "↩️ بازگشت", "callback_data": "sub_home"}]]}
+    )
+
+
+def rpc_call(method, params):
+    last_error = None
+    for url in BSC_RPC_URLS:
+        try:
+            response = requests.post(
+                url,
+                json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+                timeout=12,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if payload.get("error"):
+                last_error = payload["error"]
+                continue
+            return payload.get("result")
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"BSC RPC unavailable: {last_error}")
+
+
+def verify_bsc_usdt_transfer(tx_hash):
+    if not re.fullmatch(r"0x[a-fA-F0-9]{64}", tx_hash or ""):
+        return False, "فرمت TXID معتبر نیست.", None
+    receipt = rpc_call("eth_getTransactionReceipt", [tx_hash])
+    if receipt is None:
+        return False, "تراکنش هنوز در شبکه پیدا نشده است. چند دقیقه بعد دوباره TXID را ارسال کنید.", None
+    if receipt.get("status", "0x0").lower() != "0x1":
+        return False, "این تراکنش موفق نبوده است.", None
+    latest_hex = rpc_call("eth_blockNumber", [])
+    latest_block = int(latest_hex, 16)
+    tx_block = int(receipt.get("blockNumber", "0x0"), 16)
+    if latest_block - tx_block + 1 < 12:
+        return False, "تراکنش ثبت شده، اما هنوز ۱۲ تأیید شبکه را نگرفته است. کمی بعد همین TXID را دوباره ارسال کنید.", None
+
+    expected_to = SUBSCRIPTION_WALLET.lower().replace("0x", "").rjust(64, "0")
+    total_received = 0
+    for log in receipt.get("logs", []):
+        topics = log.get("topics", [])
+        if (log.get("address", "").lower() != USDT_BSC_CONTRACT
+                or len(topics) < 3
+                or topics[0].lower() != TRANSFER_TOPIC
+                or topics[2].lower().replace("0x", "") != expected_to):
+            continue
+        try:
+            total_received += int(log.get("data", "0x0"), 16)
+        except ValueError:
+            continue
+
+    required = USDT_PRICE * (10 ** USDT_DECIMALS)
+    if total_received < required:
+        return False, "واریز تأیید نشد: مبلغ دریافتی به آدرس مقصد کمتر از ۱۵ تتر است یا توکن با قرارداد مورد انتظار مطابقت ندارد.", None
+    return True, "تراکنش تأیید شد.", (total_received / (10 ** USDT_DECIMALS), tx_block)
+
+
+def activate_subscription_from_tx(user_id, tx_hash, amount, block_number):
+    now = datetime.now(ZoneInfo("UTC"))
+    with get_db_connection() as conn:
+        existing = conn.execute(
+            "SELECT user_id FROM bot_usdt_payments WHERE tx_hash = %s",
+            (tx_hash.lower(),)
+        ).fetchone()
+        if existing:
+            return False, "این TXID قبلاً برای یک اشتراک ثبت شده است."
+        conn.execute(
+            "INSERT INTO bot_usdt_payments (tx_hash, user_id, amount, block_number) VALUES (%s, %s, %s, %s)",
+            (tx_hash.lower(), int(user_id), amount, int(block_number))
+        )
+        row = conn.execute(
+            "SELECT expires_at FROM bot_subscriptions WHERE user_id = %s FOR UPDATE",
+            (int(user_id),)
+        ).fetchone()
+        base = row[0] if row and row[0] and row[0] > now else now
+        expiry = base + timedelta(days=30)
+        conn.execute(
+            """INSERT INTO bot_subscriptions (user_id, expires_at, updated_at)
+               VALUES (%s, %s, NOW())
+               ON CONFLICT (user_id) DO UPDATE
+               SET expires_at = EXCLUDED.expires_at, updated_at = NOW()""",
+            (int(user_id), expiry)
+        )
+        conn.commit()
+    return True, expiry
+
+
+def handle_subscription_txid(chat_id, text):
+    tx_hash = (text or "").strip()
+    ok, message, payment = verify_bsc_usdt_transfer(tx_hash)
+    if not ok:
+        send_message(chat_id, "⚠️ " + message)
+        return
+    amount, block_number = payment
+    try:
+        activated, result = activate_subscription_from_tx(chat_id, tx_hash, amount, block_number)
+    except Exception as exc:
+        print("SUBSCRIPTION ACTIVATION ERROR:", exc)
+        send_message(chat_id, "❌ تراکنش بررسی شد، اما ثبت اشتراک با خطا مواجه شد. لطفاً با مدیر تماس بگیرید و TXID را نگه دارید.")
+        return
+    if not activated:
+        send_message(chat_id, "⚠️ " + result)
+        return
+    expiry_text = result.astimezone(ZoneInfo("Asia/Tehran")).strftime("%Y-%m-%d %H:%M")
+    send_message(chat_id, f"✅ پرداخت شما با موفقیت تأیید شد.\nاشتراک شما ۳۰ روز فعال شد.\nتاریخ انقضا: {expiry_text} به وقت تهران")
+
+
+def handle_subscription_callback(callback, callback_id, callback_data):
+    user_id = (callback.get("from") or {}).get("id")
+    if not user_id:
+        answer_callback(callback_id, "خطا در شناسایی کاربر")
+        return True
+    if callback_data == "sub_home":
+        answer_callback(callback_id)
+        subscription_menu(user_id)
+        return True
+    if callback_data == "sub_pay":
+        answer_callback(callback_id)
+        subscription_payment_instructions(user_id)
+        return True
+    if callback_data == "sub_status":
+        expiry = get_subscription_expiry(user_id)
+        if expiry and expiry > datetime.now(ZoneInfo("UTC")):
+            expiry_text = expiry.astimezone(ZoneInfo("Asia/Tehran")).strftime("%Y-%m-%d %H:%M")
+            answer_callback(callback_id, "اشتراک فعال است")
+            send_message(user_id, f"✅ اشتراک شما فعال است.\nانقضا: {expiry_text} به وقت تهران")
+        else:
+            answer_callback(callback_id, "اشتراک فعال نیست")
+            subscription_menu(user_id)
+        return True
+    return False
+
+
 def get_db_connection():
     database_url = os.environ.get("DATABASE_URL")
 
@@ -299,6 +535,59 @@ def log_price_click(
         print("PRICE CLICK LOG ERROR:", e)
 
 
+def record_bot_activity(user, chat, action_type):
+    """ثبت آخرین فعالیت و شمارنده تعامل هر کاربر در چت خصوصی یا گروه."""
+    try:
+        user = user or {}
+        chat = chat or {}
+        user_id = user.get("id")
+        if not user_id or user.get("is_bot"):
+            return
+
+        chat_type = chat.get("type", "unknown")
+        private_count = 1 if chat_type == "private" else 0
+        group_count = 1 if chat_type in {"group", "supergroup"} else 0
+
+        with get_db_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO bot_users
+                (
+                    user_id, username, first_name, last_name,
+                    first_seen, last_seen, total_interactions,
+                    private_interactions, group_interactions,
+                    last_chat_id, last_chat_type, last_action
+                )
+                VALUES (%s, %s, %s, %s, NOW(), NOW(), 1, %s, %s, %s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    username = COALESCE(EXCLUDED.username, bot_users.username),
+                    first_name = COALESCE(EXCLUDED.first_name, bot_users.first_name),
+                    last_name = COALESCE(EXCLUDED.last_name, bot_users.last_name),
+                    last_seen = NOW(),
+                    total_interactions = bot_users.total_interactions + 1,
+                    private_interactions = bot_users.private_interactions + EXCLUDED.private_interactions,
+                    group_interactions = bot_users.group_interactions + EXCLUDED.group_interactions,
+                    last_chat_id = EXCLUDED.last_chat_id,
+                    last_chat_type = EXCLUDED.last_chat_type,
+                    last_action = EXCLUDED.last_action
+                """,
+                (
+                    int(user_id),
+                    user.get("username"),
+                    user.get("first_name"),
+                    user.get("last_name"),
+                    private_count,
+                    group_count,
+                    chat.get("id"),
+                    chat_type,
+                    action_type,
+                ),
+            )
+    except Exception as e:
+        # خطای آمار نباید عملکرد اصلی ربات را مختل کند.
+        print("BOT USER ACTIVITY LOG ERROR:", e)
+
+
 def init_database():
     # تحلیل‌های دارای #WATCHLIST را جداگانه نگه می‌داریم.
     with get_db_connection() as connection:
@@ -329,6 +618,37 @@ def init_database():
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_users (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                total_interactions BIGINT NOT NULL DEFAULT 0,
+                private_interactions BIGINT NOT NULL DEFAULT 0,
+                group_interactions BIGINT NOT NULL DEFAULT 0,
+                last_chat_id BIGINT,
+                last_chat_type TEXT,
+                last_action TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_bot_users_last_seen
+            ON bot_users (last_seen DESC)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_bot_users_total_interactions
+            ON bot_users (total_interactions DESC)
+            """
+        )
+
         connection.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_price_click_logs_chat_time
@@ -496,6 +816,7 @@ def clear_test_navigation_message(chat_id, symbol):
 
 
 init_database()
+init_subscription_tables()
 
 print(
     "ROOYE V25 TEST MODE:",
@@ -2697,6 +3018,23 @@ def webhook():
             ""
         )
 
+        callback_message_for_activity = callback.get("message", {}) or {}
+        record_bot_activity(
+            callback.get("from"),
+            callback_message_for_activity.get("chat", {}) or {},
+            "callback",
+        )
+
+        if handle_subscription_callback(callback, callback_id, callback_data):
+            return "ok"
+
+        callback_user_id = (callback.get("from") or {}).get("id")
+        if callback_user_id and not is_subscription_admin(callback_user_id):
+            if not subscription_is_active(callback_user_id):
+                answer_callback(callback_id, "برای استفاده از ربات ابتدا اشتراک تهیه کنید.")
+                subscription_menu(callback_user_id)
+                return "ok"
+
         # =====================================================
         # V26: ناوبری تحلیل قبلی/جدیدتر در همان پیام
         # =====================================================
@@ -3285,6 +3623,28 @@ def webhook():
         "message_thread_id"
     )
 
+    record_bot_activity(
+        message.get("from"),
+        message.get("chat", {}) or {},
+        "message",
+    )
+
+    # درگاه اشتراک: تمام پیام‌های خصوصی کاربران عادی قبل از رسیدن به امکانات ربات بررسی می‌شوند.
+    if chat_type == "private" and not is_subscription_admin(chat_id):
+        incoming_text = (message.get("text") or "").strip()
+        if incoming_text.lower() in {"/subscription", "اشتراک", "خرید اشتراک", "تمدید اشتراک"}:
+            subscription_menu(chat_id)
+            return "ok"
+        if incoming_text.lower() == "/start" and not subscription_is_active(chat_id):
+            subscription_menu(chat_id)
+            return "ok"
+        if re.fullmatch(r"0x[a-fA-F0-9]{64}", incoming_text):
+            handle_subscription_txid(chat_id, incoming_text)
+            return "ok"
+        if not subscription_is_active(chat_id):
+            subscription_menu(chat_id)
+            return "ok"
+
 
 # =====================================================
 # دستورهای دیتابیس
@@ -3296,89 +3656,131 @@ def webhook():
     ).strip()
 
 
-    # حذف دستی یک یا چند نماد از واچ‌لیست (فقط مدیر)
-    remove_match = re.match(
-        r"^/remove(?:@[A-Za-z0-9_]+)?\s+(.+)$",
-        text_for_command,
-        flags=re.IGNORECASE,
-    )
-    if remove_match:
-        if chat_type != "private" or not is_admin_user(chat_id):
-            send_message(
-                chat_id,
-                "⛔ این دستور فقط در گفت‌وگوی خصوصی و برای مدیر ربات فعال است."
-            )
+    # گزارش کاربران و آخرین فعالیت؛ فقط مدیر ربات
+    if chat_type == "private" and text_for_command.split(maxsplit=1)[0].split("@", 1)[0].lower() in {
+        "/users", "/topusers", "/stats", "/active", "/user"
+    }:
+        if not is_admin_user(chat_id):
+            send_message(chat_id, "⛔ این دستور فقط برای مدیر ربات فعال است.")
             return "ok"
 
-        raw_symbols = remove_match.group(1).strip()
-        raw_symbols = re.sub(
-            r"\bfrom\s+watchlist\b|\bwatchlist\b",
-            "",
-            raw_symbols,
-            flags=re.IGNORECASE,
-        ).strip(" ,؛")
-
-        symbols = []
-        for item in re.split(r"[,،;؛\s]+", raw_symbols):
-            item = item.strip()
-            if not item:
-                continue
-            normalized = normalize_text(item)
-            symbol = ALIASES.get(normalized, normalized.upper())
-            if re.fullmatch(r"[A-Z0-9]{2,15}", symbol):
-                symbols.append(symbol)
-
-        symbols = list(dict.fromkeys(symbols))
-        if not symbols:
-            send_message(
-                chat_id,
-                "❌ نماد ارز مشخص نیست. مثال:\n"
-                "/remove RIVER from watchlist"
-            )
-            return "ok"
-
+        parts = text_for_command.split()
+        command = parts[0].split("@", 1)[0].lower()
         try:
-            removed = []
-            not_found = []
             with get_db_connection() as connection:
-                for symbol in symbols:
+                if command == "/stats":
+                    r = connection.execute(
+                        """
+                        SELECT COUNT(*),
+                               COUNT(*) FILTER (WHERE last_seen >= NOW() - INTERVAL '1 day'),
+                               COUNT(*) FILTER (WHERE last_seen >= NOW() - INTERVAL '7 days'),
+                               COUNT(*) FILTER (WHERE last_seen >= NOW() - INTERVAL '30 days'),
+                               COALESCE(SUM(total_interactions), 0)
+                        FROM bot_users
+                        """
+                    ).fetchone()
+                    send_message(
+                        chat_id,
+                        "📊 آمار کاربران ربات\n\n"
+                        f"👥 کل کاربران: {r[0]}\n"
+                        f"🟢 فعال در ۲۴ ساعت: {r[1]}\n"
+                        f"🟢 فعال در ۷ روز: {r[2]}\n"
+                        f"🟢 فعال در ۳۰ روز: {r[3]}\n"
+                        f"🔢 مجموع تعامل‌های ثبت‌شده: {r[4]}"
+                    )
+                    return "ok"
+
+                if command == "/active":
+                    days = max(1, min(int(parts[1]), 3650)) if len(parts) > 1 else 7
+                    query = """
+                        SELECT user_id, username, first_name, last_name,
+                               total_interactions, last_seen,
+                               private_interactions, group_interactions
+                        FROM bot_users
+                        WHERE last_seen >= NOW() - (%s * INTERVAL '1 day')
+                        ORDER BY last_seen DESC LIMIT 50
+                    """
+                    rows = connection.execute(query, (days,)).fetchall()
+                    title = f"🟢 کاربران فعال در {days} روز اخیر"
+                elif command == "/topusers":
                     rows = connection.execute(
                         """
-                        UPDATE analyses
-                        SET watchlist = FALSE
-                        WHERE UPPER(TRIM(symbol)) = %s
-                          AND watchlist = TRUE
-                        RETURNING id
-                        """,
-                        (symbol,),
+                        SELECT user_id, username, first_name, last_name,
+                               total_interactions, last_seen,
+                               private_interactions, group_interactions
+                        FROM bot_users
+                        ORDER BY total_interactions DESC, last_seen DESC
+                        LIMIT 30
+                        """
                     ).fetchall()
-                    if rows:
-                        removed.append((symbol, len(rows)))
-                    else:
-                        not_found.append(symbol)
-                connection.commit()
-
-            response_text = "⭐ نتیجه به‌روزرسانی واچ‌لیست:\n"
-            if removed:
-                response_text += "\n".join(
-                    f"✅ {symbol}: از واچ‌لیست خارج شد ({count} رکورد)"
-                    for symbol, count in removed
-                )
-            if not_found:
-                if removed:
-                    response_text += "\n"
-                response_text += "\n".join(
-                    f"ℹ️ {symbol}: در واچ‌لیست فعلی نبود"
-                    for symbol in not_found
-                )
-            response_text += "\n\n📚 تاریخچه تحلیل‌ها حذف نشده است."
-            send_message(chat_id, response_text)
+                    title = "🏆 کاربران با بیشترین تعامل ثبت‌شده"
+                elif command == "/user":
+                    if len(parts) < 2 or not parts[1].isdigit():
+                        send_message(chat_id, "مثال: /user 123456789")
+                        return "ok"
+                    rows = connection.execute(
+                        """
+                        SELECT user_id, username, first_name, last_name,
+                               total_interactions, last_seen,
+                               private_interactions, group_interactions,
+                               first_seen, last_chat_id, last_chat_type, last_action
+                        FROM bot_users WHERE user_id = %s
+                        """,
+                        (int(parts[1]),),
+                    ).fetchall()
+                    if not rows:
+                        send_message(chat_id, "🔎 هنوز فعالیتی از این کاربر ثبت نشده است.")
+                        return "ok"
+                    r = rows[0]
+                    tz = ZoneInfo("Asia/Tehran")
+                    send_message(
+                        chat_id,
+                        "👤 جزئیات کاربر\n\n"
+                        f"{format_user_name(r[0], r[1], r[2], r[3])}\n"
+                        f"🔢 کل تعامل‌ها: {r[4]}\n"
+                        f"💬 خصوصی: {r[6]} | 👥 گروه: {r[7]}\n"
+                        f"🗓 اولین فعالیت: {r[8].astimezone(tz).strftime('%Y-%m-%d %H:%M')}\n"
+                        f"🕐 آخرین فعالیت: {r[5].astimezone(tz).strftime('%Y-%m-%d %H:%M')}\n"
+                        f"📍 آخرین محل: {r[9]} ({r[10]})\n"
+                        f"نوع آخرین رویداد: {r[11]}"
+                    )
+                    return "ok"
+                else:  # /users [page]
+                    page = max(1, int(parts[1])) if len(parts) > 1 else 1
+                    rows = connection.execute(
+                        """
+                        SELECT user_id, username, first_name, last_name,
+                               total_interactions, last_seen,
+                               private_interactions, group_interactions
+                        FROM bot_users
+                        ORDER BY last_seen DESC
+                        LIMIT 25 OFFSET %s
+                        """,
+                        ((page - 1) * 25,),
+                    ).fetchall()
+                    title = f"👥 فهرست کاربران | صفحه {page}"
         except Exception as e:
-            print("WATCHLIST REMOVE ERROR:", e)
-            send_message(
-                chat_id,
-                "❌ خطا در به‌روزرسانی واچ‌لیست. جزئیات در لاگ Render ثبت شد."
+            print("BOT USER REPORT ERROR:", e)
+            send_message(chat_id, "❌ خطا در خواندن آمار کاربران. جزئیات در لاگ Render ثبت شد.")
+            return "ok"
+
+        if not rows:
+            send_message(chat_id, "در این بازه/صفحه کاربری ثبت نشده است.")
+            return "ok"
+
+        tz = ZoneInfo("Asia/Tehran")
+        reply = title + "\n\n"
+        for index, r in enumerate(rows, start=1):
+            last_seen = r[5].astimezone(tz).strftime("%Y-%m-%d %H:%M")
+            rank = index + ((page - 1) * 25 if command == "/users" else 0)
+            reply += (
+                f"{rank}. {format_user_name(r[0], r[1], r[2], r[3])}\n"
+                f"   تعامل: {r[4]} | خصوصی: {r[6]} | گروه: {r[7]}\n"
+                f"   آخرین فعالیت: {last_seen}\n"
             )
+        if command == "/users":
+            reply += f"\nصفحه بعد: /users {page + 1}"
+        send_message(chat_id, reply)
         return "ok"
 
 
