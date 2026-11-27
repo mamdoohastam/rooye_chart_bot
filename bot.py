@@ -766,6 +766,65 @@ def copy_analysis_message(
 
         if not response.ok:
             LAST_COPY_ERROR = response.text[:1000]
+            print("COPY FAILED; trying stored photo_file_id fallback:", LAST_COPY_ERROR)
+
+            # پیام منبع ممکن است از گروه حذف شده باشد؛ در این حالت از file_id
+            # ذخیره‌شده در جدول analyses استفاده می‌کنیم و عکس را مستقیم می‌فرستیم.
+            try:
+                with get_db_connection() as connection:
+                    photo_row = connection.execute(
+                        """
+                        SELECT photo_file_id
+                        FROM analyses
+                        WHERE chat_id = %s
+                          AND message_id = %s
+                          AND photo_file_id IS NOT NULL
+                          AND photo_file_id <> ''
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (source_chat_id, source_message_id),
+                    ).fetchone()
+
+                if photo_row and photo_row[0]:
+                    photo_payload = {
+                        "chat_id": target_chat_id,
+                        "photo": photo_row[0],
+                    }
+                    if target_message_thread_id is not None:
+                        photo_payload["message_thread_id"] = target_message_thread_id
+                    if reply_to_message_id is not None:
+                        photo_payload["reply_parameters"] = {
+                            "message_id": reply_to_message_id
+                        }
+
+                    photo_response = requests.post(
+                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+                        json=photo_payload,
+                        timeout=15,
+                    )
+                    print(
+                        "SEND STORED PHOTO:",
+                        photo_response.status_code,
+                        photo_response.text[:700],
+                    )
+                    if photo_response.ok:
+                        photo_result = photo_response.json().get("result", {}) or {}
+                        photo_message_id = photo_result.get("message_id")
+                        if photo_message_id is not None:
+                            LAST_COPY_ERROR = ""
+                            metadata = {
+                                "message_id": photo_message_id,
+                                "message_thread_id": photo_result.get("message_thread_id"),
+                            }
+                            return metadata if return_metadata else photo_message_id
+                    LAST_COPY_ERROR += " | sendPhoto fallback: " + photo_response.text[:700]
+                else:
+                    LAST_COPY_ERROR += " | No stored photo_file_id found for this analysis."
+            except Exception as fallback_error:
+                LAST_COPY_ERROR += " | photo fallback error: " + str(fallback_error)
+                print("STORED PHOTO FALLBACK ERROR:", fallback_error)
+
             return None
 
         result = response.json().get("result", {}) or {}
